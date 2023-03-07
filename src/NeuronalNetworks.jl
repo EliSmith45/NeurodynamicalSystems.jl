@@ -2,5 +2,5 @@ module NeuronalNetworks
 
 # Write your package code here.
 
-println("Hello")
+println("test")
 end
