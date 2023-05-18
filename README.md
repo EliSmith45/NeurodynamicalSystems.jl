@@ -58,7 +58,7 @@ A common approach to address this is nonlinearly transforming the data to exagge
 The LcaWta NDS effectively has a dynamically sized basin of attraction. It will initially be very wide if the LCA neurons are highly correlated, but once the LCA layer and Wta layer start narrowing in on the fixed point, they synergystically accelerate their convergence rates by sending each other increasingly sharp/sparse inputs
 
 
-*This list will grow over time. I will soon add several Projection Neural Networks, Zeroing Neural Networks, and probably more advanced WTA circuits.* 
+*This list will grow over time. I will soon add several Projection Neural Networks, Zeroing Neural Networks, several Hopfield network variants, and probably more advanced WTA circuits.* 
 
 # More ideas
 These layers can be arranged into more complex networks. I'll be exploring the idea of hierarchical feedback and will soon introduce tools/examples for dealing with such networks. Paiton et. al. gives a good example of a hierarchcial LCA model that I'm working on now. I'll also soon implement more useful examples, as I originally intended to use these networks for audio source separation. I also will eventually add more biologically-inspired update rules such as Hebbian plasticity, which may work better than automatic differentiation for online learning. This could be useful for forever-learning machines.
