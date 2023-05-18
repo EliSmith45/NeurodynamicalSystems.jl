@@ -1,6 +1,8 @@
 module NeurodynamicalSystems
 
+
 using LinearAlgebra
+
 
 #Locally competitive algorithm for highly efficient biologically-plausible sparse coding:
 #
@@ -20,119 +22,315 @@ using LinearAlgebra
 # returns sparse code A, representing a highly sparse time frequency distribution with implicit total 
 # variation minimization. 
 
-export Lca, LcaRms, LcAdam, Cappa
+export Lca
 
-#Locally competitive algorithm as a stateful function similar to Flux.jl RNNs
+
+
 mutable struct Lca{T} 
     W::Matrix{T} #weights for neuron receptive fields
     G::Matrix{T} #lateral inhibition weights, G = -WWᵀ - I
     λ::T
-    τ::T
+    optimizer
 
 
     u::Array{T}
+    du::Array{T}
    
 end
 
-function Lca(neurons, T = Float32; W = rand(T, neurons[2], neurons[1]), λ = .01, τ = .01)
+function Lca(neurons, T = Float32;
+    W = rand(T, neurons[2], neurons[1]), 
+    λ = .01, 
+    optimizer = "Adam", 
+    τ = .01, 
+    β1 = .65, 
+    β2 = .75, 
+    ϵ = eps())
     
     foreach(x -> normalize!(x, 2), eachcol(W))
     G = W' * W
     G[diagind(G)] .= 0
     u = zeros(T, neurons[2])
+    du = copy(u)
 
-    Lca{T}(W, G, λ, τ, u)
+
+    if optimizer == "SGD"
+        opt = Sgd(T; τ)
+    elseif optimizer == "RMS"
+        opt = Rmsprop(neurons[2], T; τ, β = β1, ϵ)
+    elseif optimizer == "Adam"
+        opt = Adam(neurons[2], T; τ, β1, β2, ϵ)
+    else
+        println("Invalid optimizer, choosing Adam with default parameters")
+        opt = Adam(neurons[2], T; τ = .1, β1 = .65, β2 = .75, ϵ = eps())
+    end
+
+
+    Lca{T}(W, G, λ, opt, u, du)
 end
 
 # x is feedforward input signal such that W * x is feedforward stimulation
 function (m::Lca)(x)
-    m.u .+= m.τ .* (m.W' * x .- (m.G * max.(m.λ, m.u)) .- m.u)
+    m.du = m.W' * x .- (m.G * max.(m.λ, m.u)) .- m.u .- m.λ
+    m.u = m.optimizer(m.du, m.u)
 end
 
 
 
 
-#locally competitive algorithm where the (T)ransform W is fixed/known and
-#learning rate is chosen adaptively as in RMSProp/ADAM
-mutable struct LcaRms{T} 
-    W::Matrix{T} #feedforward stimulation
-    G::Matrix{T} #lateral inhibition weights, G = -WWᵀ - I
-    λ::T
+mutable struct Sgd{T} 
+    τ::T
+end
+
+function Sgd(T = Float32; τ)
+    Sgd{T}(τ)
+end
+
+function (m::Sgd)(du, u)
+    u .+ (m.τ .* du)
+end
+
+mutable struct Rmsprop{T} 
     τ::T
     β::T
     ϵ::T
-
-
-    u::Array{T}
-    du::Array{T}
     v::Array{T}
 end
 
-function LcaRms(neurons, T = Float32; W = rand(T, neurons[2], neurons[1]), λ = .01, τ = .01, β = .9, ϵ = .001)    
-    
-    foreach(x -> normalize!(x, 2), eachcol(W))
-    G = W' * W
-    G[diagind(G)] .= 0
-    u = zeros(T, neurons[2])
-    du = copy(u)
-    v = copy(u) #.+ 1.0f0
-    LcaRms{T}(W, G, λ, τ, β, ϵ, u, du, v)
+function Rmsprop(neurons, T = Float32; τ, β, ϵ)
+    v = zeros(T, neurons)
+    Rmsprop{T}(τ, β, ϵ, v)
 end
 
-# x is feedforward input signal such that W * x is feedforward stimulation
-function (m::LcaRms)(x)
-    m.du .= m.W' * x .- (m.G * max.(m.λ, m.u)) .- m.u 
-    m.v .*= m.β
-    m.v .+= (1 - m.β) .* (m.du .^ 2)
-
-    m.u .+= (m.τ ./ (m.v .+ m.ϵ)) .* m.du
-
+function (m::Rmsprop)(du, u)
+    m.v = (m.v .* m.β) .+ (1 - m.β) .* (du .^ 2)
+    u .+ ((m.τ ./ (m.v .+ m.ϵ)) .* du)
 end
 
 
-#locally competitive algorithm where the (T)ransform W is fixed/known and
-#learning rate is chosen adaptively as in RMSProp/ADAM
-mutable struct LcAdam{T} 
-    W::Matrix{T} #feedforward stimulation
-    G::Matrix{T} #lateral inhibition weights, G = -WWᵀ - I
-    λ::T
+mutable struct Adam{T} 
     τ::T
     β1::T
     β2::T
     ϵ::T
-
-
-    u::Array{T}
-    du::Array{T}
     m::Array{T}
     v::Array{T}
 end
 
-function LcAdam(neurons, T = Float32; W = rand(T, neurons[2], neurons[1]), λ = .01, τ = .01, β1 = .9, β2 = .9)    
+
+function Adam(neurons, T = Float32; τ, β1, β2, ϵ)
+    m = zeros(T, neurons)
+    v = copy(m)
+    Adam{T}(τ, β1, β2, ϵ, m, v)
+end
+
+function (m::Adam)(du, u)
+    m.m = (m.β1 .* m.m) .+ (1 - m.β1) .* (du)
+    m.v = (m.β2 .* m.v) .+ (1 - m.β2) .* (du .^ 2)
+    u .+ ((m.τ / m.β1) .* (m.m ./ (sqrt.(m.v ./ m.β2) .+ eps())))
+end
+
+
+#Locally competitive algorithm as a stateful function similar to Flux.jl RNNs
+mutable struct WTA{T} 
+
+
+    τ::T
+    α::T
+    β1::T
+    β2::T
+    Te::T
+    Ti::T
+    G::T
+
+    excitatory::Array{T}
+    inhibitory::T
+
+   
+   
+end
+
+export WTA
+function WTA(neurons, T = Float32;  τ = .01f0, 
+                                    α = .5f0,
+                                    β1 = 1.0f0,
+                                    β2 = 1.0f0,
+                                    Te = .010f0,
+                                    Ti = .010f0,
+                                    G = 1.0f0)
     
-    foreach(x -> normalize!(x, 2), eachcol(W))
-    G = W' * W
-    G[diagind(G)] .= 0
-    u = zeros(T, neurons[2])
-    du = copy(u)
-    m = copy(u)
-    v = copy(u)
-    LcAdam{T}(W, G, λ, τ, β1, β2, eps(), u, du, m, v)
+   
+    excitatory = zeros(T, neurons)
+    inhibitory = zero(T)
+
+    WTA{T}(τ, α, β1, β2, Te, Ti, G, excitatory, inhibitory)
 end
 
 # x is feedforward input signal such that W * x is feedforward stimulation
-function (m::LcAdam)(x)
-    m.du .= m.W' * x .- (m.G * max.(m.λ, m.u)) .- m.u 
-    m.m .*= m.β1
-    m.m .+= (1 - m.β1) .* (m.du)
-
-
-    m.v .*= m.β2
-    m.v .+= (1 - m.β2) .* (m.du .^ 2)
-
-
-    m.u .+= (m.τ / m.β1) .* (m.m ./ (sqrt.(m.v ./ m.β2) .+ eps()))
+function (m::WTA)(x)
+    m.inhibitory = m.inhibitory .+ (m.τ * (max.(0, (m.β2 * sum(m.excitatory)) - m.Ti) - (m.G * m.inhibitory)))
+    m.excitatory = m.excitatory .+ (m.τ .* (max.(0, x .+ (m.α  .* m.excitatory) .- ((m.β1 * m.inhibitory ) + m.Te)) .- (m.G .* m.excitatory)))
+    
 end
+
+
+export LocallyConnectedWTA
+#locally competitive algorithm as a stateful function similar to Flux.jl RNNs
+mutable struct LocallyConnectedWTA{T} 
+
+    W::Matrix{T}
+    τ::T
+    α::T
+    β::T
+    Te::T
+    Ti::T
+    G::T
+
+    excitatory::Array{T}
+    inhibitory::Array{T}
+
+   
+   
+end
+
+
+function LocallyConnectedWTA(neurons, halfwidth, T = Float32;  τ = .1f0, 
+                                    α = .5f0,
+                                    β = 1.0f0,
+                                  
+                                    Te = .010f0,
+                                    Ti = .010f0,
+                                    G = 1.0f0)
+    
+   
+    excitatory = zeros(T, neurons)
+    inhibitory = copy(excitatory)
+    W = zeros(T, neurons, neurons)
+
+    for j in axes(W, 2)
+        for i in axes(W, 1)
+            if abs(i - j) <= halfwidth
+                W[i, j] = sqrt(β)
+            end
+        end
+    end
+    LocallyConnectedWTA{T}(W, τ, α, β, Te, Ti, G, excitatory, inhibitory)
+end
+
+# x is feedforward input signal such that W * x is feedforward stimulation
+function (m::LocallyConnectedWTA)(x)
+    m.inhibitory = m.inhibitory .+ (m.τ * (max.(0, (m.W * m.excitatory) .- m.Ti) .- (m.G * m.inhibitory)))
+    m.excitatory = m.excitatory .+ (m.τ .* (max.(0, x .+ (m.α  .* m.excitatory) .- (m.W * m.inhibitory ) .- m.Te) .- (m.G .* m.excitatory)))
+  
+end
+
+
+
+export LcaWTA
+#locally competitive algorithm as a stateful function similar to Flux.jl RNNs
+mutable struct LcaWTA{T} 
+
+    lcaLayer::Lca{T}
+    wtaLayer::LocallyConnectedWTA{T}
+    flowRates::Vector{Vector{T}}
+    inputs::Vector{Vector{T}}
+end
+
+
+function LcaWTA(lca, wta, T = Float32; flowRates = [[-.10f0, .10f0], [.10f0, -.10f0]])
+    
+   
+    inputs = [zeros(T, length(lca.u)), zeros(T, length(wta.excitatory))]
+    
+    LcaWTA{T}(lca, wta, flowRates, inputs)
+end
+
+
+# x is feedforward input signal such that W * x is feedforward stimulation
+function (m::LcaWTA)(x)
+
+    m.inputs[1] = x .+ (m.flowRates[1][1] .* max.(m.lcaLayer.λ, m.lcaLayer.u)) .+ (m.flowRates[1][2] .* m.wtaLayer.excitatory)
+    m.inputs[2] = (m.flowRates[2][1] .* m.lcaLayer.u) .+ (m.flowRates[2][2] .* m.wtaLayer.excitatory)
+   
+    m.lcaLayer(m.inputs[1])
+    m.wtaLayer(m.inputs[2])
+    
+end
+
+
+
+
+
+mutable struct Dnn1{T} #block-sparse matrix
+  
+    connected::Vector{Vector{Bool}}
+    transforms::Vector{Vector{Any}}
+    scales::Vector{Vector{T}}
+    thresholds::Vector{Vector{T}}
+    tcs::Vector{Vector{T}} #time constants
+
+    layers::Vector{Vector{T}}
+    updates::Vector{Vector{T}}
+end
+
+function Dnn1(neurons, T = Float32; 
+    tcs = zeros(T, length(neurons)), 
+    thresholds = zeros(T, length(neurons)),
+    connected = nothing, 
+    transforms = nothing,
+    scales = nothing)
+    
+    layers = [zeros(T, neurons[i]) for i in eachindex(neurons)]
+    updates = deepcopy(layers)
+    if isnothing(connected)
+        connected = [zeros(Bool, length(neurons)) for i in eachindex(neurons)]
+        
+        for j in eachindex(neurons)
+            for i in eachindex(neurons)
+                if (j - i) == 1
+                    connected[j][i] = true
+                end
+                
+            end
+        end
+        
+    end
+
+    if isnothing(transforms)
+        transforms = [[[0 0 ; 0 0] for j in eachindex(neurons)] for i in eachindex(neurons)]
+
+        
+        for j in eachindex(neurons)
+            for i in eachindex(neurons)
+                if connected[j][i] 
+                    transforms[j][i] = rand(T, neurons[j], neurons[i])
+                end
+                
+            end
+        end
+        
+    end
+
+    if isnothing(scales)
+        scales = [zeros(length(neurons)) for i in eachindex(neurons)]
+        
+        for j in eachindex(neurons)
+            for i in eachindex(neurons)
+                if connected[j][i] 
+                    scales[j][i] = rand(T)
+                end
+                
+            end
+        end
+        
+    end
+
+    Dnn1{T}(connected, transforms, scales, thresholds, tcs, layers, updates)
+ 
+end
+
+
+
 
 
 
@@ -194,60 +392,6 @@ end
 
 
 
-#Locally competitive algorithm as a stateful function similar to Flux.jl RNNs
-mutable struct LcaSelfAttention{T} 
-    Wx::Union{Matrix{T}, UniformScaling{Bool}} #neuron feedforward receptive fields
-    Wl::Matrix{T} #weights for lateral inhibition, Wl = -WxWxᵀ - I
-    Wg::Matrix{T} #Weights for neurons' unique information, Wg = (Wl / ||Wl||) + I
-    Wa::Matrix{T} #Weights for self-attention-like computation, Wa = WxWxᵀ
-
-
-    λ::T
-    τ::T
-    β::T
-    ϵ::T
-    α::T
-
-
-    A::Matrix{T}
-    u::Array{T}
-    a::Array{T}
-    du::Array{T}
-    v::Array{T}
-    g::Array{T}
-end
-
-function LcaSelfAttention(neurons, T = Float32; Wx = I, Wl = rand(T, neurons, neurons), Wg = rand(T, neurons, neurons), Wa = rand(T, neurons, neurons), λ = .01, τ = .01, β = .9, ϵ = .001, α  = .1)
-    
-    A = copy(Wa)
-    u = zeros(T, neurons)
-    a = copy(u)
-    du = copy(u)
-    v = copy(u)
-    g = copy(u)
-    LcaSelfAttention{T}(Wx, Wl, Wg, Wa, λ, τ, β, ϵ, α, A, u, a, du, v, g)
-end
-
-# x is feedforward input signal such that W * x is feedforward stimulation
-function (m::LcaSelfAttention)(x)
-
-    for j in axes(m.A, 2)
-        m.A[:, j] .= exp.(@view(m.Wa[:, j]) .* m.a)
-        m.A[:, j] ./= sum(@view(m.A[:, j]))
-    end
-    m.g = m.α .* tanh.((1/m.α) * m.Wg * m.a) .* m.a 
-    m.du .= x - (m.Wl * m.a) .- m.u .+ m.g
-    m.v .*= m.β
-    m.v .+= (1 - m.β) .* m.du .^2
-
-    m.u .+= (m.τ ./ (m.v .+ m.ϵ)) .* (m.A' * m.du)
-    
-    hard_threshold!(m.a, m.u, m.λ)
-
-  
-end
-
-
 
 
 
@@ -285,158 +429,10 @@ end
 
 
 
-mutable struct Dnn{T} #block-sparse matrix
-    W::Vector{Vector}
-    linked::Vector{Vector{Bool}}
-
-   
-    #dU::Array{Array{T}}
-    U::Array{Array{T}}
-    A::Array{Array{T}}
-
-    λ::Array{T}
-    τ::Array{T}
-
-
-end
-
-function Dnn(neurons, n_observations, T = Float32; W = nothing, linked = nothing, λ = repeat([.01f0], inner = length(neurons)), τ = repeat([.01f0], inner = length(neurons)))
-    
-  
-    if isnothing(linked)
-        linked = [zeros(Bool, length(neurons)) for i in eachindex(neurons)]
-        
-        for j in eachindex(neurons)
-            for i in eachindex(neurons)
-                if abs(i - j) <= 1
-                    linked[j][i] = true
-                end
-                
-            end
-        end
-        
-    end
-
-    
-
-    
-
-    if isnothing(W)
-        W = initW(neurons, linked, T)
-        
-    end
-  
-   
-   
-   # dU = [zeros(T, neurons[i], n_observations) for i in eachindex(neurons)]
-    U = [zeros(T, neurons[i], n_observations) for i in eachindex(neurons)]
-    A = [zeros(T, neurons[i], n_observations) for i in eachindex(neurons)]
-
-  
-    Dnn{T}(W, linked,  U, A, λ, τ)
- 
-end
 
 
 
-
-
-
-
-
-function hard_threshold!(x::Array{T}, vals::Array{T}, threshold::Number) where T <: Real
-   
-    for i in eachindex(vals)
-        if vals[i] < threshold
-            x[i] = 0
-        else
-            x[i] = vals[i]
-        end
-    end
-end
-
-function hard_threshold!(x::Array{T}, threshold::Number) where T <: Real
-   
-    for i in eachindex(x)
-        if x[i] < threshold
-            x[i] = 0
-        end
-    end
-end
-
-
-function hard_threshold(vals, threshold::Number) where T <: Real
-   
-
-    if vals < threshold
-        0
-    else
-        vals
-    end
-    
-end
-
-export convn, fastconv
-
-##############################################
-# Generic convn function using direct method for computing convolutions:
-# Accelerated Convolutions for Efficient Multi-Scale Time to Contact Computation in Julia
-# Alexander Amini, Alan Edelman, Berthold Horn
-##############################################
-using Base.Cartesian
-@generated function convn(E::Array{T,N}, k::Array{T,N}) where {T,N}
-    quote
-        sizeThreshold = 21;
-        if length(k) <= sizeThreshold || $N > 2
-            #println("using direct")
-            retsize = [size(E)...] + [size(k)...] .- 1
-            retsize = tuple(retsize...)
-            ret = zeros(T, retsize)
-
-            convn!(ret,E,k)
-            return ret
-        elseif $N == 2 #greater than threshold but still compatible with base julia
-            #println("using fft2")
-            return conv2(E,k)
-        else
-            #println("using fft1")
-            return conv(E,k)
-        end
-    end
-end
-
-# direct version (do not check if threshold is satisfied)
-@generated function fastconv(E::Array{T,N}, k::Array{T,N}) where {T,N}
-    quote
-
-        retsize = [size(E)...] + [size(k)...] .- 1
-        retsize = tuple(retsize...)
-        ret = zeros(T, retsize)
-
-        convn!(ret,E,k)
-        return ret
-
-    end
-end
-
-
-# in place helper operation to speedup memory allocations
-@generated function convn!(out::Array{T}, E::Array{T,N}, k::Array{T,N}) where {T,N}
-    quote
-        @inbounds begin
-            @nloops $N x E begin
-                @nloops $N i k begin
-                    (@nref $N out d->(x_d + i_d - 1)) += (@nref $N E x) * (@nref $N k i)
-                end
-            end
-        end
-        return out
-    end
-end
-
-
-
-function (m::Dnn)()
+function (m::Dnn1)()
    
     @views for j ∈ eachindex(m.W)
         m.U[j] .+= m.τ[j] .* ((m.W[j]' * m.A).- m.U[j] )
@@ -449,7 +445,7 @@ function (m::Dnn)()
     end
 end
 
-function (m::Dnn)(x)
+function (m::Dnn1)(x)
     m.A[1] .= x
 end
 
