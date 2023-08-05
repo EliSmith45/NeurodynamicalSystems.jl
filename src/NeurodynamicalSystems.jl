@@ -1,339 +1,423 @@
 module NeurodynamicalSystems
 
 
-using LinearAlgebra
+using LinearAlgebra, NNlib, ComponentArrays, OrdinaryDiffEq, Random
+
+export nonneg_normalized!, gaussian_basis, sample_basis
 
 
-#Locally competitive algorithm for highly efficient biologically-plausible sparse coding:
-#
-# Kaitlin L. Fair, Daniel R. Mendat, Andreas G. Andreou, Christopher J. Rozell,
-# Justin Romberg and David V. Anderson. "Sparse Coding Using the Locally Competitive 
-# Algorithm on the TrueNorth Neurosynaptic System"
-# https://www.frontiersin.org/articles/10.3389/fnins.2019.00754/full
+########## Data types for proper dispatch of update functions for predictive coding layers
+
+# PCLayer{A} is the type of layer in a predictive coding network. {A} must be TopLayer, HiddenLayer, or InputLayer depending on its position in the hierarchy.
+# TopLayers predict the layer below but are at the top of the hierarchy and therefore are not predicted by any layers. With each time step, their activations are 
+# changed only to better predict the layers below.
+# HiddenLayers predict the layer below and are predicted by the layer above. At each time step, their activations are changed to simultaneously better predict the 
+# layer below, and to be more consistent with the predictions of the layer above. This allows for top-down error-correction of sparse codes similar to hopfield networks
+# and transformers.
+# InputLayers contain the input data and have no learnable parameters. They can either be fixed to the input data, or updated to be more consistent with the data and 
+# predictions from the layers above. This allows for hopfield-like error correction when the data is noisy or partially obscured.
+
+abstract type PCLayer{A} end 
+abstract type TopLayer end 
+abstract type HiddenLayer end
+abstract type InputLayer end
 
 
 
-# X: data matrix with rows as samples
-# G: correlation/inhibition strength of neurons. For an IIR filterbank, g(i, j) this is the 
-# frequency response of filter i at center frequency wj
-# τ: time constant, should be about 10ms
-# iters: how many times neurons are updated for each time sample. Should be low (as low as 1) if 
-# the audio sample rate is high (e.g. fs > 20kHz)
-# returns sparse code A, representing a highly sparse time frequency distribution with implicit total 
-# variation minimization. 
 
-export Lca
+########## Linear predictive coding layers ##########
+
+mutable struct PCLinearLayer{A} <: PCLayer{A}
+
+    states #NamedTuple{:errors, :predictions} giving the values that the layer above predicts for this layer and the prediction error
+    inputstates #NamedTuple{:errors, :predictions} giving the values that this layer predicts for the layer below and the prediction error
+    ps #NamedTuple giving the learnable parameters used to predict the layer below
+    tc #time constant
+    α #learning rate
+    name::Symbol #layer name wrapped in Val() for indexing the component arrays containing the activations
+
+end
+
+# Construct a linear hidden layer.
+function PCLinearLayer(in_dims, out_dims, name::Symbol, T = Float32; tc = 0.1f0, α = 0.01f0)
+
+    states = (predictions = zeros(T, out_dims...), errors = zeros(T, out_dims...))
+    inputstates = (predictions = zeros(T, in_dims...), errors = zeros(T, in_dims...))
+    
+    weights = rand(T, in_dims[1], out_dims[1])
+    nonneg_normalized!(weights)
+
+    grads = copy(weights)
+    ps = (weight = weights, grads = grads)
+
+    PCLinearLayer{HiddenLayer}(states, inputstates, ps, tc, α, name, Val(name))
+end
+
+# Constructs a linear top layer 
+function PCLinearTop(in_dims, out_dims, name::Symbol, T = Float32; tc = 0.1f0, α = 0.01f0)
+
+    
+    states = (predictions = zeros(T, out_dims...), errors = zero(T))
+    inputstates = (predictions = zeros(T, in_dims...), errors = zeros(T, in_dims...))
+    
+    weights = rand(T, in_dims[1], out_dims[1])
+    nonneg_normalized!(weights)
+
+    grads = copy(weights)
+    ps = (weight = weights, grads = grads)
+
+    PCLinearLayer{TopLayer}(states, inputstates, ps, tc, α, name, Val(name))
+end
+
+# Constructs a linear input layer
+function PCLinearInput(out_dims, name::Symbol, T = Float32; tc = 0.1f0, α = nothing)
+
+    states = (predictions = zeros(T, out_dims...), errors = zeros(T, out_dims...))
+    inputstates = nothing
+    ps = (input = copy(states.predictions),)
+
+    PCLinearLayer{InputLayer}(states, inputstates, ps, tc, α, name, Val(name))
+end
 
 
 
-mutable struct Lca{T} 
-    W::Matrix{T} #weights for neuron receptive fields
-    G::Matrix{T} #lateral inhibition weights, G = -WWᵀ - I
-    λ::T
-    optimizer
+
+########## Convolutional predictive coding layers ##########
+
+mutable struct PCConvLayer{A} <: PCLayer{A}
+
+    states
+    inputstates
+    ps
+    cdims
+    tc
+    α
+    name
+    valname
+
+end
+
+# Constructs a convolutional hidden layer
+function PCConvLayer(k, ch_in, ch_out, in_dims, name::Symbol, T = Float32; stride=1, padding=0, dilation=1, groups=1, tc = 0.1f0, α = 0.01f0)
+
+    inputstates = (predictions = zeros(T, in_dims...), errors = zeros(T, in_dims...))
+    weights = rand(T, k..., ch_in, ch_out)
+    nonneg_normalized!(weights)
+
+    grads = copy(weights)
+    ps = (weight = weights, grads = grads)
+
+    cdims = NNlib.DenseConvDims(size(inputstates.errors), size(weights); stride = stride, padding = padding, dilation = dilation, groups = groups, flipkernel = true)
+    y = NNlib.conv(inputstates.errors, weights, cdims)
+    
+    states = (predictions = copy(y), errors = copy(y))
+    
+    PCConvLayer{HiddenLayer}(states, inputstates, ps, cdims, tc, α, name, Val(name))
+end
+
+# Constructs a convolutional top layer
+function PCConvTopLayer(k, ch_in, ch_out, in_dims, name::Symbol, T = Float32; stride=1, padding=0, dilation=1, groups=1, tc = 0.1f0, α = 0.01f0)
+
+    inputstates = (predictions = zeros(T, in_dims...), errors = zeros(T, in_dims...))
+    weights = rand(T, k..., ch_in, ch_out)
+    nonneg_normalized!(weights)
+
+    grads = copy(weights)
+    ps = (weight = weights, grads = grads)
+    cdims = NNlib.DenseConvDims(size(inputstates.errors), size(weights); stride = stride, padding = padding, dilation = dilation, groups = groups, flipkernel = true)
+    y = NNlib.conv(inputstates.errors, weights, cdims)
+   
+    states = (predictions = copy(y), errors = zero(T))
+    
+    PCConvLayer{TopLayer}(states, inputstates, ps, cdims, tc, α, name, Val, name)
+end
+
+# Constructs a convolutional input layer
+function PCConvInputLayer(in_dims, name::Symbol, T = Float32; tc = 0.1f0, α = nothing)
+
+    states = (predictions = zeros(T, in_dims...), errors = zeros(T, in_dims...))
+    inputstates = nothing
+    ps = (input = copy(states.predictions),)
+    cdims = nothing
+    
+    PCConvLayer{InputLayer}(states, inputstates, ps, cdims, tc, α, name, Val(name))
+end
 
 
-    u::Array{T}
-    du::Array{T}
+# Makes PCLayers callable for the update steps of the ODE solver. Takes the layer's du and u elements,
+# then updates du and other layer states in-place. This function should never be called on its own but 
+# is called behind the scenes by the ODE solver
+
+function (m::PCLayer)(du, u)
+    #u .= relu(u)
+    update_errors!(m, u)
+    update_du!(du, m, u)
+    update_predictions!(m, u)
+end
+
+
+
+########## Functions to update states and parameters for each layer type ##########
+# As before, none of these should be called by the user. 
+
+function update_errors!(m::PCLayer{W}, u) where W <: Union{HiddenLayer, InputLayer}
+    m.states.errors .= u .- m.states.predictions
+end
+
+function update_errors!(m::PCLayer{TopLayer}, u) 
+    return
+end
+
+function update_du!(du, m::PCLinearLayer{W}, u) where W <: Union{HiddenLayer, TopLayer}
+    du .= m.tc .* ((m.ps.weight' * m.inputstates.errors) .- m.states.errors)
+end
+function update_du!(du, m::PCConvLayer{W}, u) where W <: Union{HiddenLayer, TopLayer}
+    NNlib.conv!(du, m.inputstates.errors, m.ps.weight, m.cdims)
+    du .-= m.states.errors
+    du .*= m.tc
+end
+function update_du!(du, m::PCLayer{InputLayer}, u)
+    du .= m.tc .* (m.ps.input .- u)
+end
+
+function update_predictions!(m::PCLinearLayer{W}, u) where W <: Union{HiddenLayer, TopLayer}
+    mul!(m.inputstates.predictions, m.ps.weight, u)
+end
+function update_predictions!(m::PCConvLayer{W}, u) where W <: Union{HiddenLayer, TopLayer}
+    NNlib.∇conv_data!(m.inputstates.predictions, u, m.ps.weight, m.cdims)
+end
+function update_predictions!(m::PCLayer{InputLayer}, u) 
+    return
+end
+
+function update_weights!(m::PCLinearLayer{W}, u) where W <: Union{HiddenLayer, TopLayer}
+    m.ps.weight .+= mul!(m.ps.grads, m.inputstates.errors, (m.α .* u)')
+    nonneg_normalized!(m.ps.weight)
+end
+
+function update_weights!(m::PCConvLayer{W}, u) where W <: Union{HiddenLayer, TopLayer}
+    NNlib.∇conv_filter!(m.ps.grads, m.inputstates.errors, m.α .* u, m.cdims)
+    #m.ps.weight .+= m.α .* m.ps.grads
+    nonneg_normalized!(m.ps.weight)
+end
+
+function update_weights!(m::PCLayer{InputLayer}, u) 
+    return
+end
+
+
+
+
+
+########## PCModule functions ##########
+
+# PCModules contain a named tuple of layers and are callable. Calling them iterates through the layers and calls them
+# on each layer's component of the du and u ComponentArrays to compute the overall update step. 
+mutable struct PCModule3
+    
+    layers
+
+end
+
+# Links a tuple of layers by setting inputstates of each layer to states of the layer below. 
+# This memory is shared between layers rather than copied, so it makes indexing much easier without
+# expanding the overall memory requirements of the network.
+function link_layers!(layers)
+    
+    u0 = map(l -> l.states.predictions, layers)
+    names = map(l -> l.name, layers)
+
+    for i in 2:length(names)
+        layers[i].inputstates = layers[i - 1].states
+    end
+    
+    layers = NamedTuple{names}(layers)
+    u0 = ComponentArray(NamedTuple{names}(u0))
+    PCModule3(layers), u0, ()
+
+end
+
+# Makes the PCModule callable to compute the activation updates
+function (m::PCModule3)(du, u, p, t)
+    
+    u .= relu(u)
+    foreach(layer -> layer(@view(du[layer.valname]), @view(u[layer.valname])), m.layers)
+    
+end
+
+# Makes PCModule callable on the integrator object of the ODE solver. This function updates
+# each layer's parameters via a callback function.
+function (m::PCModule3)(integrator)
+    
+    foreach(layer -> update_weights!(layer, @view(u[layer.valname])), m.layers)
    
 end
 
-function Lca(neurons, T = Float32;
-    W = rand(T, neurons[2], neurons[1]), 
-    λ = .01, 
-    optimizer = "Adam", 
-    τ = .01, 
-    β1 = .65, 
-    β2 = .75, 
-    ϵ = eps())
+
+
+
+
+########## PCNetwork functions ##########
+
+# PCNetwork contains a PCModule and ODE solver arguments. Calling it on an input runs the full ODE solver for the 
+# chosen time span.
+mutable struct PCNet1
+    pcmodule
+    u0
+    ps
+    solver
+    saveat
+    reltol
+    abstol
+    callback
+end
+
+function PCNet1(pcmodule, u0, ps; solver = Tsit5(), saveat = 1.0f0, reltol = 1e-6, abstol = 1e-6, callback = 0.01f0)
+    PCNet1(pcmodule, u0, ps, solver, saveat, reltol, abstol, callback)
+end
+
+# Makes PCNetwork callable. This sets the input parameters to x before running the ODE system.
+function (m::PCNet1)(x, tspan = (0.0f0, 1.0f0); saveat = tspan[2])
+    m.pcmodule.layers.L0.ps.input .= x
+    ode = ODEProblem(m.pcmodule, m.u0, tspan, m.ps)
+    solve(ode, m.solver, saveat = saveat).u[end]
+end
+
+# Set all states to zero to run the network on a new input
+function reset!(pcn::PCNet1)
+
+    for k in keys(pcn.pcmodule.layers)
+        pcn.pcmodule.layers[k].states.predictions .= 0
+        pcn.pcmodule.layers[k].states.errors .= 0
+    end
     
-    foreach(x -> normalize!(x, 2), eachcol(W))
-    G = W' * W
-    G[diagind(G)] .= 0
-    u = zeros(T, neurons[2])
-    du = copy(u)
+end
+
+# Trains the PCNetwork. Uses a discrete callback function to pause the ODE solver at the times in stops and update each layers' parameters.
+function train(net::PCNet1, x, tspan = (0.0f0, 1.0f0); stops = [tspan[1], (tspan[2] - tspan[1]) / 2, tspan[2]], saveat = tspan[2])
+    
+    net.pcmodule.layers.L0.ps.input .= x
+    ode = ODEProblem(net.pcmodule, net.u0, tspan, net.ps)
+        
+    cb = DiscreteCallback((u, t, integrator) -> t in stops, integrator -> net.pcmodule(integrator))
 
 
-    if optimizer == "SGD"
-        opt = Sgd(T; τ)
-    elseif optimizer == "RMS"
-        opt = Rmsprop(neurons[2], T; τ, β = β1, ϵ)
-    elseif optimizer == "Adam"
-        opt = Adam(neurons[2], T; τ, β1, β2, ϵ)
+    solve(ode, Tsit5(), callback = cb, tstops = stops, saveat = saveat).u[end]
+
+end
+
+
+
+########## Utility functions ##########
+
+
+# Force all elements of an array to be nonnegative and normalize features by their L2 norm. 
+# These functions are called during training to normalize weights and enforce nonnegativity, 
+# which helps with sparse coding. 
+
+function nonneg_normalized!(weight::AbstractArray{T, 2}) where T
+    
+    for k in axes(weight, 2)
+        weight[:, k] .= relu.(weight[:, k])
+        weight[:, k] ./= norm(weight[:, k], 2)
+    end
+    
+end
+
+function nonneg_normalized!(weight::AbstractArray{T, 3}) where T
+        
+    for k in axes(weight, 3)
+        weight[:, :, k] .= relu.(weight[:, :, k])
+        weight[:, :, k] ./= norm(weight[:, :, k], 2)
+    end
+
+end
+
+function nonneg_normalized!(weight::AbstractArray{T, 4}) where T
+        
+    for k in axes(weight, 4)
+        weight[:, :, :, k] .= relu.(weight[:, :, :, k])
+        weight[:, :, :, k] ./= norm(weight[:, :, :, k], 2)
+    end
+
+end
+
+function nonneg_normalized!(weight::AbstractArray{T, 5}) where T
+        
+    for k in axes(weight, 5)
+        weight[:, :, :, :, k] .= relu.(weight[:, :, :, :, k])
+        weight[:, :, :, :, k] ./= norm(weight[:, :, :, :, k], 2)
+    end
+
+end
+
+
+# Creates a gaussian basis to represent dummy features for toy problems
+function gaussian_basis(n, m; basesCenters = (1/n):(1/n):1, binCenters = (1/m):(1/m):1, sigma = 1.0, T = Float32)
+    
+    w = zeros(T, m, n)
+  
+    for (j, basis) in enumerate(basesCenters)
+        for (i, bin) in enumerate(binCenters)
+            w[i, j] = exp(-((basis - bin) / (2 * sigma)) ^ 2); #* (exp(-((centers[end] - centers[j]) / (2 * sigma)) ^ 2) - exp(-((centers[end] - centers[j]) / (2 * sigma)) ^ 2))
+        end
+    end
+
+    foreach(x -> normalize!(x, 2), eachcol(w))
+
+    w
+end
+
+# Generate a dummy data set from a linear combination of features. This is for toy problems to 
+# evaluate the sparse codes and learned features.
+function sample_basis(basis; nObs = 1, nActive = 2, maxCoherence = .999)
+
+    G = basis' * basis
+    n = size(basis, 2)
+    m = size(basis, 1)
+
+    if nObs == 1
+
+        y = zeros(eltype(basis), n)
+        x = zeros(eltype(basis), m)
+
     else
-        println("Invalid optimizer, choosing Adam with default parameters")
-        opt = Adam(neurons[2], T; τ = .1, β1 = .65, β2 = .75, ϵ = eps())
+        y = zeros(eltype(basis), n, nObs)
+        x = zeros(eltype(basis), m, nObs)
     end
-
-
-    Lca{T}(W, G, λ, opt, u, du)
-end
-
-# x is feedforward input signal such that W * x is feedforward stimulation
-function (m::Lca)(x)
-    m.du = m.W' * x .- (m.G * max.(m.λ, m.u)) .- m.u .- m.λ
-    m.u = m.optimizer(m.du, m.u)
-end
-
-
-
-
-mutable struct Sgd{T} 
-    τ::T
-end
-
-function Sgd(T = Float32; τ)
-    Sgd{T}(τ)
-end
-
-function (m::Sgd)(du, u)
-    u .+ (m.τ .* du)
-end
-
-mutable struct Rmsprop{T} 
-    τ::T
-    β::T
-    ϵ::T
-    v::Array{T}
-end
-
-function Rmsprop(neurons, T = Float32; τ, β, ϵ)
-    v = zeros(T, neurons)
-    Rmsprop{T}(τ, β, ϵ, v)
-end
-
-function (m::Rmsprop)(du, u)
-    m.v = (m.v .* m.β) .+ (1 - m.β) .* (du .^ 2)
-    u .+ ((m.τ ./ (m.v .+ m.ϵ)) .* du)
-end
-
-
-mutable struct Adam{T} 
-    τ::T
-    β1::T
-    β2::T
-    ϵ::T
-    m::Array{T}
-    v::Array{T}
-end
-
-
-function Adam(neurons, T = Float32; τ, β1, β2, ϵ)
-    m = zeros(T, neurons)
-    v = copy(m)
-    Adam{T}(τ, β1, β2, ϵ, m, v)
-end
-
-function (m::Adam)(du, u)
-    m.m = (m.β1 .* m.m) .+ (1 - m.β1) .* (du)
-    m.v = (m.β2 .* m.v) .+ (1 - m.β2) .* (du .^ 2)
-    u .+ ((m.τ / m.β1) .* (m.m ./ (sqrt.(m.v ./ m.β2) .+ eps())))
-end
-
-
-#Locally competitive algorithm as a stateful function similar to Flux.jl RNNs
-mutable struct WTA{T} 
-
-
-    τ::T
-    α::T
-    β1::T
-    β2::T
-    Te::T
-    Ti::T
-    G::T
-
-    excitatory::Array{T}
-    inhibitory::T
-
-   
-   
-end
-
-export WTA
-function WTA(neurons, T = Float32;  τ = .01f0, 
-                                    α = .5f0,
-                                    β1 = 1.0f0,
-                                    β2 = 1.0f0,
-                                    Te = .010f0,
-                                    Ti = .010f0,
-                                    G = 1.0f0)
-    
-   
-    excitatory = zeros(T, neurons)
-    inhibitory = zero(T)
-
-    WTA{T}(τ, α, β1, β2, Te, Ti, G, excitatory, inhibitory)
-end
-
-# x is feedforward input signal such that W * x is feedforward stimulation
-function (m::WTA)(x)
-    m.inhibitory = m.inhibitory .+ (m.τ * (max.(0, (m.β2 * sum(m.excitatory)) - m.Ti) - (m.G * m.inhibitory)))
-    m.excitatory = m.excitatory .+ (m.τ .* (max.(0, x .+ (m.α  .* m.excitatory) .- ((m.β1 * m.inhibitory ) + m.Te)) .- (m.G .* m.excitatory)))
-    
-end
-
-
-export LocallyConnectedWTA
-#locally competitive algorithm as a stateful function similar to Flux.jl RNNs
-mutable struct LocallyConnectedWTA{T} 
-
-    W::Matrix{T}
-    τ::T
-    α::T
-    β::T
-    Te::T
-    Ti::T
-    G::T
-
-    excitatory::Array{T}
-    inhibitory::Array{T}
-
-   
-   
-end
-
-
-function LocallyConnectedWTA(neurons, halfwidth, T = Float32;  τ = .1f0, 
-                                    α = .5f0,
-                                    β = 1.0f0,
-                                  
-                                    Te = .010f0,
-                                    Ti = .010f0,
-                                    G = 1.0f0)
-    
-   
-    excitatory = zeros(T, neurons)
-    inhibitory = copy(excitatory)
-    W = zeros(T, neurons, neurons)
-
-    for j in axes(W, 2)
-        for i in axes(W, 1)
-            if abs(i - j) <= halfwidth
-                W[i, j] = sqrt(β)
-            end
-        end
-    end
-    LocallyConnectedWTA{T}(W, τ, α, β, Te, Ti, G, excitatory, inhibitory)
-end
-
-# x is feedforward input signal such that W * x is feedforward stimulation
-function (m::LocallyConnectedWTA)(x)
-    m.inhibitory = m.inhibitory .+ (m.τ * (max.(0, (m.W * m.excitatory) .- m.Ti) .- (m.G * m.inhibitory)))
-    m.excitatory = m.excitatory .+ (m.τ .* (max.(0, x .+ (m.α  .* m.excitatory) .- (m.W * m.inhibitory ) .- m.Te) .- (m.G .* m.excitatory)))
+    a = 1
   
-end
-
-
-
-export LcaWTA
-#locally competitive algorithm as a stateful function similar to Flux.jl RNNs
-mutable struct LcaWTA{T} 
-
-    lcaLayer::Lca{T}
-    wtaLayer::LocallyConnectedWTA{T}
-    flowRates::Vector{Vector{T}}
-    inputs::Vector{Vector{T}}
-end
-
-
-function LcaWTA(lca, wta, T = Float32; flowRates = [[-.10f0, .10f0], [.10f0, -.10f0]])
     
-   
-    inputs = [zeros(T, length(lca.u)), zeros(T, length(wta.excitatory))]
-    
-    LcaWTA{T}(lca, wta, flowRates, inputs)
-end
+    for t in nObs
+        possible = collect(axes(basis, 2))
+        #println(possible)
+        for i in 1:nActive
 
-
-# x is feedforward input signal such that W * x is feedforward stimulation
-function (m::LcaWTA)(x)
-
-    m.inputs[1] = x .+ (m.flowRates[1][1] .* max.(m.lcaLayer.λ, m.lcaLayer.u)) .+ (m.flowRates[1][2] .* m.wtaLayer.excitatory)
-    m.inputs[2] = (m.flowRates[2][1] .* m.lcaLayer.u) .+ (m.flowRates[2][2] .* m.wtaLayer.excitatory)
-   
-    m.lcaLayer(m.inputs[1])
-    m.wtaLayer(m.inputs[2])
-    
-end
-
-
-
-
-
-mutable struct Dnn1{T} #block-sparse matrix
-  
-    connected::Vector{Vector{Bool}}
-    transforms::Vector{Vector{Any}}
-    scales::Vector{Vector{T}}
-    thresholds::Vector{Vector{T}}
-    tcs::Vector{Vector{T}} #time constants
-
-    layers::Vector{Vector{T}}
-    updates::Vector{Vector{T}}
-end
-
-function Dnn1(neurons, T = Float32; 
-    tcs = zeros(T, length(neurons)), 
-    thresholds = zeros(T, length(neurons)),
-    connected = nothing, 
-    transforms = nothing,
-    scales = nothing)
-    
-    layers = [zeros(T, neurons[i]) for i in eachindex(neurons)]
-    updates = deepcopy(layers)
-    if isnothing(connected)
-        connected = [zeros(Bool, length(neurons)) for i in eachindex(neurons)]
-        
-        for j in eachindex(neurons)
-            for i in eachindex(neurons)
-                if (j - i) == 1
-                    connected[j][i] = true
+            j = rand(possible)
+            y[j] = rand(.5:.001:1)
+            possibleNew = []
+            for k in possible
+                if G[j, k] < maxCoherence
+                    append!(possibleNew, k)
                 end
-                
             end
+
+            possible = possibleNew
+
+
         end
-        
+
     end
 
-    if isnothing(transforms)
-        transforms = [[[0 0 ; 0 0] for j in eachindex(neurons)] for i in eachindex(neurons)]
+    return basis * y, y
 
-        
-        for j in eachindex(neurons)
-            for i in eachindex(neurons)
-                if connected[j][i] 
-                    transforms[j][i] = rand(T, neurons[j], neurons[i])
-                end
-                
-            end
-        end
-        
-    end
 
-    if isnothing(scales)
-        scales = [zeros(length(neurons)) for i in eachindex(neurons)]
-        
-        for j in eachindex(neurons)
-            for i in eachindex(neurons)
-                if connected[j][i] 
-                    scales[j][i] = rand(T)
-                end
-                
-            end
-        end
-        
-    end
-
-    Dnn1{T}(connected, transforms, scales, thresholds, tcs, layers, updates)
- 
 end
 
 
+#=
 
-
-
-
+#Cappa and LiquidRnn are experimental!
 
 #"CAPPA: Continuous-time Accelerated Proximal Point Algorithm for Sparse Recovery" https://arxiv.org/pdf/2006.02537.pdf
 #https://link.springer.com/article/10.1007/s00521-022-08166-5
@@ -429,25 +513,5 @@ end
 
 
 
-
-
-
-function (m::Dnn1)()
-   
-    @views for j ∈ eachindex(m.W)
-        m.U[j] .+= m.τ[j] .* ((m.W[j]' * m.A).- m.U[j] )
-      
-    end
-
-    
-    @views for j ∈ 2:length(m.A)
-        hard_threshold!(m.A[j], m.U[j], m.λ[j]) 
-    end
-end
-
-function (m::Dnn1)(x)
-    m.A[1] .= x
-end
-
-
+=#
 end
