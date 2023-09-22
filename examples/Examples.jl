@@ -4,7 +4,7 @@ Pkg.activate(".");
 using Revise;
 using NeurodynamicalSystems;
 
-using LinearAlgebra, NNlib, ComponentArrays, OrdinaryDiffEq, Random
+using LinearAlgebra, NNlib, ComponentArrays, DifferentialEquations, CUDA, SparseArrays
 
 
 # Generate synthetic data from a given basis. The bases are discretely sampled Gaussians,
@@ -21,72 +21,269 @@ using LinearAlgebra, NNlib, ComponentArrays, OrdinaryDiffEq, Random
 # the bases are known, i.e., the network is already trained. Later we'll see how well these networks can 
 # learn the bases
 
+n = 5000
+r = 41
+a = rand(Float32, n, n)
+for j in axes(a, 2)
+    for i in axes(a, 1)
+        if abs(i - j) >= r
+            a[i, j] = 0
+        end
+    end
+end
+a
+b = sparse(a)
+
+@time b * a
+
+c = cu(b)
+ac = cu(a)
+
+@time d = c * ac;
+@time d = c' * ac;
+@time transpose(c);
+
+dd = ComponentArray(L1 = c, L2 = deepcopy(c))
+
+
+
 n = 64; #number of bases
 m = 64; 
+nObs = 1
 
-neurons = (l0 = n, l1 = m, l2 = m)
-#size of each basis vector
-sigma = Float32(1/64); #width of each Gaussian
+sigma = Float32(1/n); #width of each Gaussian
 w = gaussian_basis(n, m; sigma = sigma) #make gaussian basis
 
-x, y = sample_basis(w; nObs = 1, nActive = 2, maxCoherence = .99) #sample from the basis
+x, y = sample_basis(w; nObs = nObs, nActive = 2, maxCoherence = .99) #sample from the basis
+y
+
 
 heatmap(w)
-f = scatterlines(y);
-scatterlines!(x);
+f = scatterlines(y[:, 1]);
+scatterlines!(x[:, 1]);
 
 f
 
-    
 
 
 
 
-ns = (m, n)
 
-l0 = PCLinearInput((m,), :L0)
-l1 = PCLinearTop((m,), (n,), :L1)
-pc, u0, ps = link_layers!((l0, l1))
-pcn = PCNet1(pc, u0, ps)
-pcn.pcmodule.layers.L1.ps.weight .= w
+n0 = m
+n1 = 64
+n2 = 64
 
-pcn.pcmodule.layers.L1.ps
+l0 = PCInput((n0, nObs), :L0)
+l1 = PCDense((n0, nObs), (n1, nObs), :L1; tc = 1.0f0, α = 0.005f0)
+l2 = PCDense((n1, nObs), (n2, nObs), :L2;  tc = 1.0f0, α = 0.005f0)
 
-@time yh = pcn(x, (0.0f0, 150.0f0))
+mo = DenseModule(l0, (l1,), l2, is_supervised = false)
+pcn = PCNet(mo)
 
 
+pcn.odemodule.ps[1] .= w
+pcn.odemodule.ps[2] .*= 0
+pcn.odemodule.ps[2][diagind(pcn.odemodule.ps[2])] .= 1.0f0
+pcn.odemodule.initializer!.ps[1] .*= 0
+pcn.odemodule.initializer!.ps[2] .*= 0
 
-scatterlines(x)
-scatterlines(pcn.pcmodule.layers.L0.ps.input)
-scatterlines(yh.L1)
-scatterlines(pcn.pcmodule.layers.L0.states.predictions)
+@time yh = pcn(x, (0.0f0, 10.0f0), abstol = 0.005f0, reltol = 0.01f0);
+
+obs = 1
+yh
+scatterlines(yh.L1[:, obs])
+
+f = scatterlines(x[:, obs])
+scatterlines!(pcn.odemodule.predictions.L0[:, obs])
+f
+
+scatterlines(yh.L2[:, obs])
+scatterlines(y[:, obs])
+
+
 reset!(pcn)
- 
-
-x1 = reshape(x[2:end], n - 1, 1, 1, 1)
-L1 = PCConvLayer((7, 1), 1, 3, size(x1); stride = (1, 1), padding = (0, 0), dilation = 1, σ = relu, tc = 0.5f0, α = 0.5f0)
-
-pc, u0, ps = PCModule4((L1 = L1,), (ns[1] - 1, 1, 1, 1))
+@time train!(pcn, x, (0.0f0, 150.0f0); iters = 100, abstol = 0.005f0, reltol = 0.01f0, stops = 140.0f0:2.0f0:150.0f0)
 
 
-#pc.layers.L1.ps.weight .= w[29:35, 32] .+ 1.5f0 .* rand(Float32, 7, 1, 1, 1)
-#nonneg_normalized!(pc.layers.L1.ps.weight)
+ssp = SteadyStateProblem(pcn.odemodule, pcn.odemodule.u0, Float32[])
+@time sssol = solve(ssp, DynamicSS(BS3(), abstol = 1e-3, reltol = 1e-2, tspan = Inf))
+scatterlines(sssol.u.L1[:, 1])
 
-pcn = PCNet1(pc, u0, ps)
-@time yh = pcn(x1, (0.0f0, 100.0f0))
+@time sssol = solve(ssp, SSRootfind())
+scatterlines(sssol.u.L1[:, 1])
 
-scatterlines(x)
-scatterlines(vec(yh.L1[:, :, 1, 1]))
-scatterlines(pcn.pcmodule.layers.L1.states.activations)
+
+
+fu = (du, u) -> pcn.odemodule(du, u, 0.0f0, Float32[])
+scatterlines(pcn.odemodule.inputstates[:, 1])
+
+@time nls = nlsolve(fu, pcn.odemodule.u0)
+scatterlines(nls.zero.L1[:, 1])
+
+
+
+n0 = m
+n1 = 256
+n2 = 256
+n3 = 256
+n4 = 256
+n5 = 256
+n6 = 256
+n7 = 256
+n8 = 256
+n9 = 256
+
+l0 = PCInput((n0, nObs), :L0)
+l1 = PCDense((n0, nObs), (n1, nObs), :L1; tc = .1f0, α = 0.005f0)
+l2 = PCDense((n1, nObs), (n2, nObs), :L2;  tc = .1f0, α = 0.005f0)
+l3 = PCDense((n2, nObs), (n3, nObs), :L3;  tc = .12f0, α = 0.005f0)
+l4 = PCDense((n3, nObs), (n4, nObs), :L4;  tc = .15f0, α = 0.005f0)
+l5 = PCDense((n4, nObs), (n5, nObs), :L5;  tc = .2f0, α = 0.005f0)
+l6 = PCDense((n5, nObs), (n6, nObs), :L6;  tc = .25f0, α = 0.005f0)
+l7 = PCDense((n6, nObs), (n7, nObs), :L7;  tc = .25f0, α = 0.005f0)
+l8 = PCDense((n7, nObs), (n8, nObs), :L8;  tc = .25f0, α = 0.005f0)
+l9 = PCDense((n8, nObs), (n9, nObs), :L9;  tc = .25f0, α = 0.005f0)
+
+mo = DenseModule(l0, (l1, l2, l3, l4), l9)
+pcn = PCNet(mo)
+
+
+@time yh = pcn(x, (0.0f0, 50.0f0), abstol = 0.005f0, reltol = 0.01f0);
+
+obs = 1
+yh
+scatterlines(yh.L1[:, obs])
+
+f = scatterlines(x[:, obs])
+scatterlines!(pcn.odemodule.predictions.L0[:, obs])
+f
+
+scatterlines(yh.L2[:, obs])
+scatterlines(y[:, obs])
+
+
 reset!(pcn)
- 
+@time train!(pcn, x, (0.0f0, 150.0f0); iters = 100, abstol = 0.005f0, reltol = 0.01f0, stops = 140.0f0:2.0f0:150.0f0)
+
+
+
+
+to_gpu!(pcn)
+xc = cu(x)
+
+@time yh = pcn(xc, (0.0f0, 100.0f0), abstol = 0.005f0, reltol = 0.01f0);
+
+
+yhc = Array.(values(NamedTuple(yh)))
+obs = 1
+scatterlines(Array(yhc[2])[:, obs])
+
+f = scatterlines(x[:, obs])
+scatterlines!(Array(pcn.odemodule.predictions.L0)[:, obs])
+f
+
+scatterlines(Array(yh.L2)[:, obs])
+scatterlines(y[:, obs])
 
 
 
 
 
 
-heatmap(pcn.pcmodule.layers.L1.ps.weight)
+
+
+scatterlines(pcn.odemodule.errors.L1)
+
+@time train!(pcn, xc, (0.0f0, 10.0f0); iters = 1000, abstol = 0.005f0, reltol = 0.02f0, stops = 8.0f0:0.1f0:10.0f0)
+
+
+pcn.odemodule.ps.L2
+
+
+N = 1000
+M = 30
+a = Tuple([cu(rand(Float32, N, N)) for i in 1:M])
+b = Tuple([cu(rand(Float32, N, N)) for i in 1:M])
+
+c = deepcopy(a)
+
+A = ArrayPartition(a)
+B = ArrayPartition(b)
+C = ArrayPartition(c)
+
+
+
+@time mul!.(C.x, adjoint.(A.x), B.x);
+
+@time BLAS.gemm!('T', 'N', 1.0f0, A.x[1], B.x[1], 0.0f0, C.x[1])
+
+C.x[1]
+
+
+C[1]
+vcat(collect(C.x))
+C = A .+ B
+Ac = cu(A)
+Ac.x
+A.x[1]
+
+
+
+xc = cu(x)
+m = pcn.odemodule
+m.inputstates = xc
+du = deepcopy(m.u0)
+u = deepcopy(m.u0)
+
+m.errors.L0
+
+m(du, u, m.gpuindicator, 0.0f0)
+scatterlines(Array(du.L1))
+u .+= du
+
+@time @cuda threads = m.nthreads blocks = m.nblocks dense_predict_update!(values(NamedTuple(du)), values(NamedTuple(u)), values(NamedTuple(m.predictions)), values(NamedTuple(m.errors)), values(NamedTuple(m.ps)), m.constants.tc)
+
+function cutest(a, b)
+
+    i = ((blockIdx().x - 1) * blockDim().x) + threadIdx().x
+
+    if i <= length(a)
+        q = 1
+        while b[q] < i
+            q += 1
+        end
+        a[i] = b[q]
+    end
+
+    return
+end
+
+
+a = (cu(zeros(3)), cu(ones(3)), 2 .* cu(ones(3)))
+b = (0, 3, 6)
+
+@cuda threads = length(a) blocks = 1 cutest(a, b)
+a
+b
+
+
+
+findfirst(x -> x > 3, b)
+
+
+broadcast!(relu, u, u)
+@view(u[m.names[1]]) .= m.inputstates
+@view(du[m.names[1]]) .*= 0
+
+@view(m.predictions[m.names[end]]) .= @view(u[m.names[end]])
+
+m.errors .= u .- m.predictions
+
+m.errors.L1
+
+u.L0
+
+heatmap(pcn.odemodule.ps.L1)
 #solve the ODE system for input data x and timespan ts, updating weights once at each time in stops.
 
 
