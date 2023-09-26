@@ -24,6 +24,8 @@ mutable struct PCConv
     states
     ps
     grads
+    ps2 #Tuple giving the parameters squared to use in-place operations for weight normalization
+    receptiveFieldNorms #Gives the L2 norm of each receptive field for normalization of weights
     cdims
     tc
     α
@@ -41,6 +43,8 @@ mutable struct ConvModule
     labels
     ps
     grads
+    ps2 #Tuple giving the parameters squared to use in-place operations for weight normalization
+    receptiveFieldNorms #Gives the L2 norm of each receptive field for normalization of weights
     cdims
     constants
     u0
@@ -70,17 +74,19 @@ end
 function PCConv(k, ch::Pair, in_dims, name::Symbol, T = Float32; stride=1, padding=0, dilation=1, groups=1, tc = 0.1f0, α = 0.01f0)
 
     inputstates = zeros(T, in_dims...)
-    weights = rand(T, k..., ch[1], ch[2])
-    nonneg_normalized!(weights)
+    ps = rand(T, k..., ch[1], ch[2])
+    broadcast!(relu, ps, ps)
 
-    grads = copy(weights)
-    
+    grads = deepcopy(ps)
+    ps2 = deepcopy(ps) .^ 2
+    receptiveFieldNorms = sum(ps2, dims = 1:(ndims(ps) - 1))
+    ps ./= receptiveFieldNorms
 
-    cdims = NNlib.DenseConvDims(size(inputstates), size(weights); stride = stride, padding = padding, dilation = dilation, groups = groups, flipkernel = true)
-    states = NNlib.conv(inputstates, weights, cdims)
+    cdims = NNlib.DenseConvDims(size(inputstates), size(ps); stride = stride, padding = padding, dilation = dilation, groups = groups, flipkernel = true)
+    states = NNlib.conv(inputstates, ps, cdims)
     
    
-    PCConv(states, ps, grads, cdims, tc, α, name)
+    PCConv(states, ps, grads, ps2, receptiveFieldNorms, cdims, tc, α, name)
 end
 
 
@@ -93,8 +99,10 @@ function ConvModule(inputlayer, hiddenlayers, toplayer, is_supervised = false)
     layers = (inputlayer, hiddenlayers..., toplayer)
 
     names = map(l -> l.name, layers)
-    ps = ComponentArray(NamedTuple{names[2:end]}(map(l -> l.ps, layers[2:end])))
-    grads =  ComponentArray(NamedTuple{names[2:end]}(map(l -> l.grads, layers[2:end])))
+    ps = map(l -> l.ps, layers[2:end])
+    grads =  map(l -> l.grads, layers[2:end])
+    ps2 = map(l -> l.ps2, layers[2:end])
+    receptiveFieldNorms = map(l -> l.receptiveFieldNorms, layers[2:end])
     tc = [map(l -> l.tc, layers[2:end])...]
     α = [map(l -> l.α, layers[2:end])...]
     
@@ -109,7 +117,7 @@ function ConvModule(inputlayer, hiddenlayers, toplayer, is_supervised = false)
 
     initializer! = ConvInitializer(deepcopy(errors), deepcopy(ps), deepcopy(grads), cdims, α)
     
-    ConvModule(is_supervised, inputstates, labels, ps, grads, tc, α, u0, predictions, errors, initializer!)
+    ConvModule(is_supervised, inputstates, labels, ps, grads, ps2, receptiveFieldNorms, tc, α, u0, predictions, errors, initializer!)
 
 end
 

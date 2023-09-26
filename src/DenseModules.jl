@@ -10,8 +10,8 @@ using LinearAlgebra, NNlib, ComponentArrays, OrdinaryDiffEq, CUDA
 
 
 ########## Internal Dependencies ##########
-include("./Utils.jl")
-using .Utils
+#include("./Utils.jl")
+#using .Utils
 
 ########## Exports ##########
 export PCDense, DenseModule, DenseInitializer
@@ -22,8 +22,10 @@ export PCDense, DenseModule, DenseInitializer
 mutable struct PCDense
 
     states #NamedTuple{:errors, :predictions} giving the values that the layer above predicts for this layer and the prediction error
-    ps #NamedTuple giving the learnable parameters used to predict the layer below
-    grads
+    ps #Tuple giving the learnable parameters used to predict the layer below
+    grads #Tuple giving gradients of parameters to use in-place operations for weight updates
+    ps2 #Tuple giving the parameters squared to use in-place operations for weight normalization
+    receptiveFieldNorms #Gives the L2 norm of each receptive field for normalization of weights
     tc #time constant
     α #learning rate
     name
@@ -37,6 +39,8 @@ mutable struct DenseModule
     labels
     ps
     grads
+    ps2
+    receptiveFieldNorms
     tc
     α
     u0
@@ -63,11 +67,14 @@ function PCDense(in_dims, out_dims, name::Symbol, T = Float32; tc = 0.1f0, α = 
 
     states = zeros(T, out_dims...)
     ps = rand(T, in_dims[1], out_dims[1])
-    nonneg_normalized!(ps)
+    broadcast!(relu, ps, ps)
 
-    grads = copy(ps)
-    
-    PCDense(states, ps, grads, tc, α, name)
+    grads = deepcopy(ps)
+    ps2 = deepcopy(ps) .^ 2
+    receptiveFieldNorms = sum(ps2, dims = 1)
+    ps ./= receptiveFieldNorms
+
+    PCDense(states, ps, grads, ps2, receptiveFieldNorms, tc, α, name)
 end
 
 
@@ -83,6 +90,9 @@ function DenseModule(inputlayer, hiddenlayers, toplayer; is_supervised = false)
     names = map(l -> l.name, layers)
     ps = map(l -> l.ps, layers[2:end])
     grads =  map(l -> l.grads, layers[2:end])
+    ps2 = map(l -> l.ps2, layers[2:end])
+    receptiveFieldNorms = map(l -> l.receptiveFieldNorms, layers[2:end])
+    
     tc = [map(l -> l.tc, layers[2:end])...]
     α = [map(l -> l.α, layers[2:end])...]
     
@@ -97,7 +107,7 @@ function DenseModule(inputlayer, hiddenlayers, toplayer; is_supervised = false)
 
     initializer! = DenseInitializer(deepcopy(errors), deepcopy(ps), deepcopy(grads), α)
     
-    DenseModule(is_supervised, inputstates, labels, ps, grads, tc, α, u0, predictions, errors, initializer!)
+    DenseModule(is_supervised, inputstates, labels, ps, grads, ps2, receptiveFieldNorms, tc, α, u0, predictions, errors, initializer!)
 end
 
 
@@ -145,19 +155,22 @@ end
 # each layer's parameters via a callback function.
 function (m::DenseModule)(integrator)
 
-    m.initializer!(m.u0, x) #must call the initializer again before each training iteration because multiple training steps are taken for each run of the ODE solver
-    m.initializer!.errors .= integrator.u .- m.initializer!.u0
+    m.initializer!(m.u0, m.inputstates) #must call the initializer again before each training iteration because multiple training steps are taken for each run of the ODE solver
+    m.initializer!.errors .= integrator.u .- m.u0
 
     for k in eachindex(m.tc)
         mul!(m.grads[k], values(NamedTuple(m.errors))[k], transpose(values(NamedTuple(integrator.u))[k + 1]))
         m.ps[k] .+=  m.α[k] .* m.grads[k]
-        mul!(m.initializer!.grads[k], values(NamedTuple(m.initializer!.errors))[k + 1], transpose(values(NamedTuple(m.initializer!.u0))[k]))
+        broadcast!(relu, m.ps[k], m.ps[k])
+        m.ps2[k] .= m.ps[k] .^ 2
+        sum!(m.receptiveFieldNorms[k], m.ps2[k])
+        m.ps[k] ./= m.receptiveFieldNorms[k]
+        
+        mul!(m.initializer!.grads[k], values(NamedTuple(m.initializer!.errors))[k + 1], transpose(values(NamedTuple(m.u0))[k]))
         m.initializer!.ps[k] .+=  m.α[k] .* m.initializer!.grads[k]
     end
 
 end
-
-
 
 
 end

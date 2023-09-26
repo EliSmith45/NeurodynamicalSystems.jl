@@ -21,29 +21,7 @@ using LinearAlgebra, NNlib, ComponentArrays, DifferentialEquations, CUDA, Sparse
 # the bases are known, i.e., the network is already trained. Later we'll see how well these networks can 
 # learn the bases
 
-n = 5000
-r = 41
-a = rand(Float32, n, n)
-for j in axes(a, 2)
-    for i in axes(a, 1)
-        if abs(i - j) >= r
-            a[i, j] = 0
-        end
-    end
-end
-a
-b = sparse(a)
 
-@time b * a
-
-c = cu(b)
-ac = cu(a)
-
-@time d = c * ac;
-@time d = c' * ac;
-@time transpose(c);
-
-dd = ComponentArray(L1 = c, L2 = deepcopy(c))
 
 
 
@@ -67,58 +45,60 @@ f
 
 
 
-
-
 n0 = m
 n1 = 64
 n2 = 64
 
 l0 = PCInput((n0, nObs), :L0)
-l1 = PCDense((n0, nObs), (n1, nObs), :L1; tc = 1.0f0, α = 0.005f0)
-l2 = PCDense((n1, nObs), (n2, nObs), :L2;  tc = 1.0f0, α = 0.005f0)
+l1 = PCDense((n0, nObs), (n1, nObs), :L1; tc = 1.0f0, α = 0.015f0)
+l2 = PCDense((n1, nObs), (n2, nObs), :L2;  tc = 1.0f0, α = 0.015f0)
 
 mo = DenseModule(l0, (l1,), l2, is_supervised = false)
 pcn = PCNet(mo)
 
 
-pcn.odemodule.ps[1] .= w
-pcn.odemodule.ps[2] .*= 0
-pcn.odemodule.ps[2][diagind(pcn.odemodule.ps[2])] .= 1.0f0
-pcn.odemodule.initializer!.ps[1] .*= 0
-pcn.odemodule.initializer!.ps[2] .*= 0
+#pcn.odemodule.ps[1] .= w
+#pcn.odemodule.ps[2] .*= 0
+#pcn.odemodule.ps[2][diagind(pcn.odemodule.ps[2])] .= 1.0f0
+#pcn.odemodule.initializer!.ps[1] .*= 0
+#pcn.odemodule.initializer!.ps[2] .*= 0
 
-@time yh = pcn(x, (0.0f0, 10.0f0), abstol = 0.005f0, reltol = 0.01f0);
+@time pcn(x, (0.0f0, 10.0f0), abstol = 0.005f0, reltol = 0.01f0);
 
 obs = 1
-yh
+yh = pcn.sol.u[end]
 scatterlines(yh.L1[:, obs])
 
 f = scatterlines(x[:, obs])
 scatterlines!(pcn.odemodule.predictions.L0[:, obs])
 f
 
-scatterlines(yh.L2[:, obs])
-scatterlines(y[:, obs])
 
 
 reset!(pcn)
-@time train!(pcn, x, (0.0f0, 150.0f0); iters = 100, abstol = 0.005f0, reltol = 0.01f0, stops = 140.0f0:2.0f0:150.0f0)
-
-
-ssp = SteadyStateProblem(pcn.odemodule, pcn.odemodule.u0, Float32[])
-@time sssol = solve(ssp, DynamicSS(BS3(), abstol = 1e-3, reltol = 1e-2, tspan = Inf))
-scatterlines(sssol.u.L1[:, 1])
-
-@time sssol = solve(ssp, SSRootfind())
-scatterlines(sssol.u.L1[:, 1])
+@time train!(pcn, x, (0.0f0, 10.0f0); iters = 100, abstol = 0.005f0, reltol = 0.01f0, stops = 8.0f0:1.0f0:10.0f0)
 
 
 
-fu = (du, u) -> pcn.odemodule(du, u, 0.0f0, Float32[])
-scatterlines(pcn.odemodule.inputstates[:, 1])
 
-@time nls = nlsolve(fu, pcn.odemodule.u0)
-scatterlines(nls.zero.L1[:, 1])
+to_gpu!(pcn)
+xc = cu(x)
+@time pcn(xc, (0.0f0, 10.0f0), abstol = 0.005f0, reltol = 0.01f0);
+
+obs = 1
+yh = pcn.sol.u[end]
+scatterlines(Array(yh.L1)[:, obs])
+
+f = scatterlines(x[:, obs])
+scatterlines!(Array(pcn.odemodule.predictions.L0)[:, obs])
+f
+
+
+
+
+
+reset!(pcn)
+@time train!(pcn, xc, (0.0f0, 10.0f0); iters = 100, abstol = 0.005f0, reltol = 0.01f0, stops = 8.0f0:1.0f0:10.0f0)
 
 
 

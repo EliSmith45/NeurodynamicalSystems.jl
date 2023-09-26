@@ -7,20 +7,82 @@ using LinearAlgebra, NNlib, ComponentArrays, OrdinaryDiffEq, CUDA
 ########## Internal Dependencies ##########
 include("./PCModules.jl")
 include("./PCNetworks.jl")
-include("./GPUUtils.jl")
+#include("./GPUUtils.jl")
 include("./Utils.jl")
 
 using .PCModules
 using .PCNetworks
-using .GPUUtils
-using .Utils
+#using .GPUUtils
+import .Utils: gaussian_basis, sample_basis
 
 ########## Exports ##########
 export PCDense, PCConv, PCInput, DenseModule, ConvModule, PCNet
 export train!, reset!, to_gpu!
-export nonneg_normalized!, gaussian_basis, sample_basis
+export gaussian_basis, sample_basis
 
 
+
+
+
+########## Moving modules, initializers, and networks to/from gpu ##########
+
+function to_gpu!(odemodule::DenseModule)
+
+    odemodule.inputstates = cu(odemodule.inputstates)
+    odemodule.ps = cu(odemodule.ps)
+    odemodule.grads = cu(odemodule.grads)
+    odemodule.ps2 = cu(odemodule.ps2)
+    odemodule.receptiveFieldNorms = cu(odemodule.receptiveFieldNorms)
+    odemodule.tc = cu(odemodule.tc)
+    odemodule.α = cu(odemodule.α)
+    odemodule.u0 = cu(odemodule.u0)
+    odemodule.predictions = cu(odemodule.predictions)
+    odemodule.errors = cu(odemodule.errors)
+   
+    to_gpu!(odemodule.initializer!)
+end
+
+function to_gpu!(initializer!::DenseInitializer)
+
+    initializer!.ps = cu(initializer!.ps)
+    initializer!.grads = cu(initializer!.grads)
+    initializer!.α = cu(initializer!.α)
+    initializer!.errors = cu(initializer!.errors)
+   
+end
+
+function to_gpu!(odemodule::ConvModule)
+
+    odemodule.inputstates = cu(odemodule.inputstates)
+    odemodule.ps = cu(odemodule.ps)
+    odemodule.grads = cu(odemodule.grads)
+    odemodule.ps2 = cu(odemodule.ps2)
+    odemodule.receptiveFieldNorms = cu(odemodule.receptiveFieldNorms)
+    odemodule.tc = cu(odemodule.tc)
+    odemodule.α = cu(odemodule.α)
+    odemodule.u0 = cu(odemodule.u0)
+    odemodule.predictions = cu(odemodule.predictions)
+    odemodule.errors = cu(odemodule.errors)
+   
+    to_gpu!(odemodule.initializer!)
+end
+
+function to_gpu!(initializer!::ConvInitializer)
+
+    initializer!.ps = cu(initializer!.ps)
+    initializer!.grads = cu(initializer!.grads)
+    initializer!.α = cu(initializer!.α)
+    initializer!.errors = cu(initializer!.errors)
+   
+end
+
+
+function to_gpu!(pcn::PCNet)
+    to_gpu!(pcn.odemodule)
+    pcn.odeprob = ODEProblem(pcn.odemodule, pcn.odemodule.u0, (0.0f0, 1.0f0), Float32[])
+    pcn.sol = solve(pcn.odeprob, BS3(), abstol = 0.01f0, reltol = 0.01f0, save_everystep = false, save_start = false)
+
+end
 
 
 end
