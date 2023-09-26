@@ -1,24 +1,41 @@
 # NeurodynamicalSystems
 
-This package implements a variety of biologically-inspired (though not necessarily biologically plausible) neural networks, i.e., dynamical systems that model neural circuits, used for typical machine learning tasks.
+NOTE: THIS PACKAGE IS STILL IN DEVELOPMENT AND NOT EVERYTHING WORKS PROPERLY YET!
+
+This is a high-performance machine learning library built around the predictive coding algorithm used by the human brain and other neurodynamical systems. It implements several standard predictive coding with hierarchical Gaussian models as well as other neural circuits observed in the brain. It can be used for anything in computer vision/listening, natural language processing, sparse coding, agent behavior control etc., or anything else you'd use deep learning for. 
+
+It is fully GPU compatible and can be used for either supervised or unsupervised learning. Also, it's really fast!
 
 # Introduction
+
+## Relevant papers
+None of these papers are affiliated with this library, but I've implemented the algorithms they describe. My paper on this library is coming soon! For now, read the papers below to learn about what this package does.
+
+[1] Millidge, Beren, Anil Seth, and Christopher L. Buckley. “Predictive Coding: A Theoretical and Experimental Review.” arXiv, July 12, 2022. https://doi.org/10.48550/arXiv.2107.12979.
+
+[2] Tscshantz, Alexander, Beren Millidge, Anil K. Seth, and Christopher L. Buckley. “Hybrid Predictive Coding: Inferring, Fast and Slow.” PLOS Computational Biology 19, no. 8 (August 2, 2023): e1011280. https://doi.org/10.1371/journal.pcbi.1011280.
+
+[3] Salvatori, Tommaso, Yuhang Song, Thomas Lukasiewicz, Rafal Bogacz, and Zhenghua Xu. “Predictive Coding Can Do Exact Backpropagation on Convolutional and Recurrent Neural Networks.” arXiv, March 5, 2021. https://doi.org/10.48550/arXiv.2103.03725.
+
+[4] Millidge, Beren, Tommaso Salvatori, Yuhang Song, Rafal Bogacz, and Thomas Lukasiewicz. “Predictive Coding: Towards a Future of Deep Learning beyond Backpropagation?” arXiv, February 18, 2022. http://arxiv.org/abs/2202.09467.
+
+[5] Shaojie Bai, J. Zico Kolter, Vladlen Koltun. Deep Equilibrium Models. https://arxiv.org/abs/1909.01377
+
+[6] C. Rozell, D. Johnson, R. Baraniuk and B. Olshausen, "Locally Competitive Algorithms for Sparse Approximation," 2007 IEEE International Conference on Image Processing, San Antonio, TX, USA, 2007, pp. IV - 169-IV - 172, doi: 10.1109/ICIP.2007.4379981.
+
+[7] Rutishauser U, Douglas RJ, Slotine JJ. Collective stability of networks of winner-take-all circuits. Neural Comput. 2011 Mar;23(3):735-73. doi: 10.1162/NECO_a_00091. Epub 2010 Dec 16. PMID: 21162667.
+
+[8] Dylan Paiton, Sheng Lundquist, William Shainin, Xinhua Zhang, Peter Schultz, and Garrett Kenyon. 2016. A Deconvolutional Competitive Algorithm for Building Sparse Hierarchical Representations. In Proceedings of the 9th EAI International Conference on Bio-inspired Information and Communications Technologies (formerly BIONETICS) (BICT'15). ICST (Institute for Computer Sciences, Social-Informatics and Telecommunications Engineering), Brussels, BEL, 535–542. https://doi.org/10.4108/eai.3-12-2015.2262428
+
 ## Background
 
-Neurodynamical systems were first popularized in neuroscience circles in the 1980s, where they were used primarily to explain the behavior of real neurons in brains. With recent advances in computing, dynamical systems, and deep learning, they have seen increasing application to general machine perception and signal processing tasks, such as computer vision/listening, sparse coding, segmentation, object tracking, agent behavior control etc. They are suitable for any deep learning task and are typically far more parameter efficient, typically making them far easier/faster to train than equally expressive deep neural networks.
+Neurodynamical systems were first popularized in neuroscience circles in the 1980s, where they were used primarily to explain the behavior of real neurons in brains. With recent advances in computing, dynamical systems, and deep learning, they have seen increasing application to general machine perception and signal processing tasks. The general idea is to form some hierarchical generative model of the data where each "layer" predicts the layer below based on its activations and parameters. The forward pass uses an ODE system or nonlinear solver to find the activations of each layer which minimize prediction error given the parameters, while the backward pass updates the parameters to minimize prediction error given the activations. This is done in a layer-by-layer manner with analytically derived update rules, so no automatic differentiation is ever used at any point.
 
-This package implements a variety of popular neurodynamical systems as well as a few novel ones of my own. They are designed to give a Flux.jl-like experience, using stateful functions similar to flux RNN cells. This package is still early in development, so you may run into issues with training, but I will soon ensure that they are all compatible with Zygote for automatic differentiation. I'll also write CUDA GPU kernels for easy parallelization. 
+This package implements a variety of popular neurodynamical systems with a focus on predictive coding. It is designed to give a Flux.jl-like experience, but under the hood is nothing like it or other mainstream deep learning libraries.
 
 ## Why use neurodynamical systems instead of other deep-learning architectures?
 
-Generally speaking, a single-layer neurodynamical system (NDS) is just like a typical feedforward network (FNN) layer applied iteratively, or equivalently, a deep feedforward network where all layers are constrained to have equal weights. These so-called weight-tied networks are almost always equally expressive as their traditional explicit feedforward counterparts.[1] Most NDSs converge to a fixed point, meaning that given a static input, each iteration brings the neuron activations closer and closer to some fixed point. Once reached, activations remain unchanged with successive applications of the layer. This means that a single-layer NDS can represent arbitrarily deep FNNs, leading to massive reductions in memory and computing requirements.[1]
-
-## Intuition 
-There is a nice intuitive reason underlying these networks' seeminly magical ability to achieve the same results as explicit networks with orders of magnitude more parameters. This reason becomes clear when carefully considering the role that depth plays in deep neural networks (DNNs). Most often, the given explanation is that DNNs can express hierarchical patterns in structured data. While true, depth plays another role, which is arguably far more important: it can nonlinearly and iteratively "sharpen" a blurred input to create better sparse codes. 
-
-In all neural networks, artificial or otherwise, neurons represent latent variables or patterns in an input signal. Each neuron *i* in layer *L* stores its corresponding pattern in its receptive field (row *i* of the *L<sup>th</sup>* weight matrix), and its activation is found by taking the inner product of its receptive field with its input (activations of layer *L-1*) and applying some nonlinear activation function. The activation of a neuron should signal the presence of the pattern in the input. In practice, it rarely does, because the patterns/receptive fields are almost always non-orthogonal. This means that if pattern *i* appears in the input, and neuron *j* is correlated with neuron *i,* then neuron *j's* activation will likely be nonzero even when *j* doesn't appear in the input. 
-
-Ideally, neuron *i* will supress neuron *j* in this scenario, creating a "sharper" and more sparse code. This can only be done iteratively. DNNs learn a sequence of transformations that iteratively sharpen the input a little bit with each subsequent layer. This may happen simultaneous to finding hierarchical patterns depending on the network architecture, which can make learned features even less interpretable. Using depth for this purpose is *incredibly* wasteful. NDSs solve this same problem by iteratively applying the same function, which works equally well (if not better) despite using dramatically fewer parameters. It also makes training more stable and many orders of magnitude faster, as you often don't even need to backpropogate through the entire dynamical system.
+Generally speaking, a single-layer neurodynamical system (NDS) is just like a typical feedforward network (FNN) layer applied iteratively, or equivalently, a deep feedforward network where all layers are constrained to have equal weights. These so-called weight-tied networks are almost always equally expressive as their traditional explicit feedforward counterparts.[1] All NDSs converge to a fixed point for a static input, meaning that given a static input, each iteration brings the neuron activations closer and closer to some fixed point. Once reached, activations remain unchanged with successive applications of the layer. This means that a single-layer NDS can represent arbitrarily deep FNNs, leading to massive reductions in memory and computing requirements.[1]
 
 ## Online inference
 NDSs are excellent for sequence modeling and online real-time inference. When used for time-varying input signals, they provide natural smoothing just as the human brain does. The level of smoothing for each hierarchical layer can be controlled independently with tuning parameters, allowing these models to capture richer and more realistic dynamics in a machine perception context (e.g. little details can change quickly, but more abstract features like the setting or overall environment can change very slowly).
@@ -32,44 +49,33 @@ Thus, NDSs can take a blurry input (both of the ball neurons partially active), 
 
 An approach like this can solve many problems with today's deep learning architectures. For example, hierarchical dynamical transformers could lead to massively improved efficiency on long-form text. Rather than using each individual word token to update the encoding of every other token, an NDS could dynamically map tokens to sentence ideas, sentences to paragraph ideas, paragraphs to chapters etc. Then, the attention mechanism could have, e.g., paragraphs attend to other paragraphs, and additional top-down feedback, instead of just having all the words in the entire text attend to each other (the latter of which comes with absurd memory requirements). This general concept of forming hierarchical summaries can be naturally extended to other input data types, like images and audio, and there are countless ways to impement it with NDSs.
 
+# Workflow
 
-# Layer types
+*See Examples.jl for a better guide on usage until I update the documentation.* 
+
+The general workflow is this:
+1. Define layers: You must have one input layer appropriately sized for the data, and at least two more "hidden layers." Layers are not callable as in Flux, only serving to help the user build complex architectures.
+
+2. Define a predictive coding module. Modules are hierarchical collections of layers or other modules. They store the parameters and other state variables like the predictions and errors. These are callable with arguments structured to be compatible with DifferentialEquations.jl. Calling the module calculates the update values in the ODE solver, so it is passed to ODEProblem.
+
+3. Define a predictive coding network. This callable structure stores the predictive coding module, ODEProblem, and ODE solution. Calling it on the input data will initialize the lowest level's states to the input, and initializes all other levels with a trainable feedforward network. Then, it runs the ODE system for some time frame to compute the final activations.
+
+4. Train the predictive coding network. Calling train!(pcnetwork, ...) will run the dynamical system then interrupt it at specified times via a callback function to calculate the weight updates. So, training doesn't happen with each time step of the ODE solver, but only the later ones.
+
+# Layer/module types
 This gives a brief overview of the current functionality of this package.
 
-Each unique neural circuit will be called a "layer." I'll update this README with more details soon when I refine the contents of this package, but for now I will just mention the layers and provide accompanying papers that describe them better. If you understand recurrent functions in Flux, you should be able to follow the code fairly easily until I properly document everything. Extra details are provided for novel algorithms that don't have an accompanying paper.
-
-1. Lca: implements the basic Locally Competitive Algorithm. [2] I've added a couple novel options that dramatically accelerate convergence through minor changes to the update step. Solving the LCA system is equivalent to doing gradient descent on some energy function (see any paper on Hopfield networks for more details) using the traditional gradient descent algorithm. There are several optimizers with much better convergence properties, notably the Adam optimizer. By setting the optimizer parameter to either "Adam" or "RMSProp" and setting the other associated parameters, this function will calculate the gradient of the energy function normally but will use the corresponding optimizer to update the state variables. There is no reason to use anything other than Adam.
-2. Wta: implements the winner-takes-all neural circuit, which can produce very complicated dynamics when arranged into networks of WTA networks.[3]
-3. LocallyConnectedWta: Locally connected WTA network where local windows of neurons are assigned to (possibly overlapping) WTA circuits. This simple example of a network of WTA networks is quite useful for spectrum deconvolution or image sharpening. For example, say you apply an IIR filterbank to an audio signal. The resulting time-frequency distribution will be "smudged" by the frequency response of each filter, meaning that, given a, say, 400Hz signal, the resulting spectrum will have positive spectral energy for, e.g., the 398, 399, 400, 401, 402Hz frequency filter. Each filter corresponds to a neuron, and we want the 400Hz neuron to inhibit its neighbors. The simplest approach is peak-picking, where each neuron is set to zero unless it is a peak. This only works when the frequencies present in the signal are sufficiently spread out, which almost never occurs in real audio. 
-
-The LCA algorithm will eventually converge to a sparse code representing the true deconvolved spectrum if each receptive field is equivalent to the frequency response of the corresponding filter. However, convergence can be incredibly slow, because adjacent neurons have highly correlated receptive fields. So, the 399Hz and 401Hz filters will inhibit the truly active 400Hz neuron as much as it inhibits them, so it can take hundreds of thousands of iterations to converge.
-
-But, we can assume that 400Hz and 401Hz signals are perceptually indistinguishable, so we can treat them as just one 400.5Hz signal. By grouping windows of nearby filters into WTA circuits in addition to using LCA, the network encodes this assumption. Convergence becomes much faster, and perceptually distinct frequencies are still properly separated. This allows for fast and accurate time-frequency superresolution, which is useful for audio source separation. 
-4. ConvWta: Similar to the above, but implemented with convolutions rather than wasteful matrix multiplication. This one is naturally more useful for image processing due to the flexibility in the kernel shape. Using a kernel with a height of 1 after applying a convolutional layer can sharpen each feature map, sometimes allowing for better feature resolution. Additionally, using a 1x1 kernel after a convolution with multiple filters implements a winner take all across features, so that only the feature that best respresents that local window of the input remains active.
-
-This can be very powerful for computer vision with hierarchical networks. Only allowing one feature to be active at a given pixel for each hierarchical level is much closer to how human vision works. Using a WTA circuit is much more effective than simply picking the maximum if top-down feedback between convolutional layers is also included. Rather than greedily picking the feature that best represents a small local window, this NDS can find a globally coherent set of sparse feature maps, making it more robust to noise and transformations.
-
-5. LcaWta: This is another novel architecture. It uses an LCA layer and a WTA layer that recurrently excite each other. The input is fed only to the LCA layer, who then sends some of its "activation" to the WTA layer. The WTA layer then sends some of the energy from its excitatory layer back to the LCA network after spme extra inhibition. This can lead to much faster convergence than either algorithm alone for sparse coding/superresolution. 
-
-As stated before, LCA and all other sparse coding algorithms are extremely slow when basis functions/receptive fields are highly correlated. Fixed point NDSs like LCA all store lots of fixed points, each corresponding to a unique pattern, and must determine the correct fixed point for a given input. Each fixed point has a "basin of attraction," which is a region around the fixed point that pulls the system towards its center once entered. When neuron receptive fields are highly correlated, their basins of attraction have lots of overlap, and the system state variables get "tugged" between multiple basins. This slows convergence.
-
-A common approach to address this is nonlinearly transforming the data to exaggerate small differences in neuron activations/state variables. For example, modern continuous Hopfield networks (and the identical attention mechanism of transformers) use the softmax activation function to warp the similarity measures between the query and keys. If the query is highly similar to several keys, the softmax function will still ensure that the correct key is given a much higher attention score than the others. This narrows the basin of attraction and can speed up convergence. However, making the basins too narrow can make it challenging to find them in the first place, which can make the system less robust against noise. So, there is a tradeoff - an appropriately sized basin is critical to NDSs. 
-
-The LcaWta NDS effectively has a dynamically sized basin of attraction. It will initially be very wide if the LCA neurons are highly correlated, but once the LCA layer and Wta layer start narrowing in on the fixed point, they synergystically accelerate their convergence rates by sending each other increasingly sharp/sparse inputs
-
+1. DenseModule: adjacent layers are connected via dense matrix multiplications.
+   Input structure: each sample is a column in a matrix.
+2. ConvModule: adjacent layers are connected via convolutions.
+   Input structure: like with convolutions in Flux, data is stored in an array such that     iterating through the last dimension will iterate through the samples, while iterating    through the second to last iterates through channels. For N-dimensional convolutions      (N = 2 for images), the input must have N + 2 dimensions
+3. SparseModule: adjacent layers are connected via sparse matrix multiplications.
+   Input structure: same as DenseModule.
+4. Dense1DSequenceModule: used for 1D sequences like text where each element of the          sequence is a column of a matrix. The input can only hold one sequence at a time, so      training is fastest when the sequences are very long.
+5. Sparse1DSequenceModule: same as Dense1DSequenceModule but the weight matrices are         sparse. Useful when the sequence has a very large number of channels.
 
 *This list will grow over time. I will soon add several Projection Neural Networks, Zeroing Neural Networks, several Hopfield network variants, and probably more advanced WTA circuits.* 
 
-# More ideas
-These layers can be arranged into more complex networks. I'll be exploring the idea of hierarchical feedback and will soon introduce tools/examples for dealing with such networks. Paiton et. al. gives a good example of a hierarchcial LCA model that I'm working on now. I'll also soon implement more useful examples, as I originally intended to use these networks for audio source separation. I also will eventually add more biologically-inspired update rules such as Hebbian plasticity, which may work better than automatic differentiation for online learning. This could be useful for forever-learning machines.
 
-
-
-# Citations
-
-[1] Shaojie Bai, J. Zico Kolter, Vladlen Koltun. Deep Equilibrium Models. https://arxiv.org/abs/1909.01377
-[2] C. Rozell, D. Johnson, R. Baraniuk and B. Olshausen, "Locally Competitive Algorithms for Sparse Approximation," 2007 IEEE International Conference on Image Processing, San Antonio, TX, USA, 2007, pp. IV - 169-IV - 172, doi: 10.1109/ICIP.2007.4379981.
-[3] Rutishauser U, Douglas RJ, Slotine JJ. Collective stability of networks of winner-take-all circuits. Neural Comput. 2011 Mar;23(3):735-73. doi: 10.1162/NECO_a_00091. Epub 2010 Dec 16. PMID: 21162667.
-[4] Dylan Paiton, Sheng Lundquist, William Shainin, Xinhua Zhang, Peter Schultz, and Garrett Kenyon. 2016. A Deconvolutional Competitive Algorithm for Building Sparse Hierarchical Representations. In Proceedings of the 9th EAI International Conference on Bio-inspired Information and Communications Technologies (formerly BIONETICS) (BICT'15). ICST (Institute for Computer Sciences, Social-Informatics and Telecommunications Engineering), Brussels, BEL, 535–542. https://doi.org/10.4108/eai.3-12-2015.2262428
 
 [![Build Status](https://github.com/EliSmith45/NeurodynamicalSystems.jl/actions/workflows/CI.yml/badge.svg?branch=master)](https://github.com/EliSmith45/NeurodynamicalSystems.jl/actions/workflows/CI.yml?query=branch%3Amaster)
