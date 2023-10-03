@@ -16,8 +16,8 @@ using .PCNetworks
 import .Utils: gaussian_basis, sample_basis
 
 ########## Exports ##########
-export PCDense, PCConv, PCInput, DenseModule, ConvModule, PCNet
-export train!, reset!, to_gpu!
+export PCDense, PCConv, PCInput, CompositeModule, PCNet
+export train!, reset!, to_gpu!, to_cpu!
 export gaussian_basis, sample_basis
 
 
@@ -26,70 +26,125 @@ export gaussian_basis, sample_basis
 
 ########## Moving modules, initializers, and networks to/from gpu ##########
 
-function to_gpu!(odemodule::DenseModule)
+function to_gpu!(x::PCInput)
 
-    odemodule.inputstates = cu(odemodule.inputstates)
-    odemodule.ps = cu(odemodule.ps)
-    odemodule.grads = cu(odemodule.grads)
-    odemodule.ps2 = cu(odemodule.ps2)
-    odemodule.receptiveFieldNorms = cu(odemodule.receptiveFieldNorms)
-    odemodule.tc = cu(odemodule.tc)
-    odemodule.α = cu(odemodule.α)
-    odemodule.u0 = cu(odemodule.u0)
-    odemodule.predictions = cu(odemodule.predictions)
-    odemodule.errors = cu(odemodule.errors)
+    x.states = cu(x.states)
+
+end
+
+function to_gpu!(x::PCDense)
+
    
-    to_gpu!(odemodule.initializer!)
+    x.ps = cu(x.ps)
+    x.grads = cu(x.grads)
+    x.ps2 = cu(x.ps2)
+    x.receptiveFieldNorms = cu(x.receptiveFieldNorms)
+    x.tc = cu(x.tc)
+    x.α = cu(x.α)
+    
+    x.labels = cu(x.labels)
+    to_gpu!(x.initializer!)
+
 end
 
-function to_gpu!(initializer!::DenseInitializer)
 
-    initializer!.ps = cu(initializer!.ps)
-    initializer!.grads = cu(initializer!.grads)
-    initializer!.α = cu(initializer!.α)
-    initializer!.errors = cu(initializer!.errors)
+function to_gpu!(x::PCConv)
+
+    x.ps = cu(x.ps)
+    x.grads = cu(x.grads)
+    x.ps2 = cu(x.ps2)
+    x.receptiveFieldNorms = cu(x.receptiveFieldNorms)
+    x.tc = cu(x.tc)
+    x.α = cu(x.α)
+    
+    x.labels = cu(x.labels)
+    to_gpu!(x.initializer!)
+
+end
+
+function to_gpu!(x::CompositeModule)
+
+    to_gpu!(x.inputlayer)
+
+    for hl in x.layers
+        to_gpu!(hl)
+    end
+
+  
+    x.u0 = cu(x.u0)
+    x.predictions = cu(x.predictions)
+    x.errors = cu(x.errors)
+    x.initerror = cu(x.initerror)
+  
+end
+
+function to_gpu!(x::DenseInitializer)
+
+    x.ps = cu(x.ps)
+    x.grads = cu(x.grads)
+    #x.α = cu(x.α)
+    #x.errors = cu(x.errors)
    
 end
 
-function to_gpu!(odemodule::ConvModule)
 
-    odemodule.inputstates = cu(odemodule.inputstates)
-    odemodule.ps = cu(odemodule.ps)
-    odemodule.grads = cu(odemodule.grads)
-    odemodule.ps2 = cu(odemodule.ps2)
-    odemodule.receptiveFieldNorms = cu(odemodule.receptiveFieldNorms)
-    odemodule.tc = cu(odemodule.tc)
-    odemodule.α = cu(odemodule.α)
-    odemodule.u0 = cu(odemodule.u0)
-    odemodule.predictions = cu(odemodule.predictions)
-    odemodule.errors = cu(odemodule.errors)
-   
-    to_gpu!(odemodule.initializer!)
-end
 
-function to_gpu!(initializer!::ConvInitializer)
+function to_gpu!(x::ConvInitializer)
 
-    initializer!.ps = cu(initializer!.ps)
-    initializer!.grads = cu(initializer!.grads)
-    initializer!.α = cu(initializer!.α)
-    initializer!.errors = cu(initializer!.errors)
+    x.ps = cu(x.ps)
+    x.grads = cu(x.grads)
+   # x.α = cu(x.α)
    
 end
 
 
-function to_gpu!(pcn::PCNet)
-    to_gpu!(pcn.odemodule)
-    pcn.odeprob = ODEProblem(pcn.odemodule, pcn.odemodule.u0, (0.0f0, 1.0f0), Float32[])
-    pcn.sol = solve(pcn.odeprob, BS3(), abstol = 0.01f0, reltol = 0.01f0, save_everystep = false, save_start = false)
+function to_gpu!(x::PCNet)
+    to_gpu!(x.odemodule)
+    x.odeprob = ODEProblem(x.odemodule, x.odemodule.u0, (0.0f0, 1.0f0), Float32[])
+    x.sol = solve(x.odeprob, BS3(), abstol = 0.01f0, reltol = 0.01f0, save_everystep = false, save_start = false)
 
 end
 
 
+function to_cpu!(x::ComponentArray)
+
+    names = keys(x)
+    x = ComponentArray(NamedTuple{names}(Array.(values(NamedTuple(x)))))
+
 end
 
 
 
+function to_cpu!(x::DenseInitializer)
 
+    x.ps = Array.(x.ps)
+    x.grads = Array.(x.grads)
+    x.α = Array(x.α)
+    x.errors = to_cpu!(x.errors)
+   
+end
+
+
+function to_cpu!(x::ConvInitializer)
+
+    x.ps = Array.(x.ps)
+    x.grads = Array.(x.grads)
+    x.α = Array(x.α)
+    x.errors = to_cpu!(x.errors)
+
+end
+
+
+function to_cpu!(x::PCNet)
+    to_cpu!(x.odemodule)
+    x.odeprob = ODEProblem(x.odemodule, x.odemodule.u0, (0.0f0, 1.0f0), Float32[])
+    x.sol = solve(x.odeprob, BS3(), abstol = 0.01f0, reltol = 0.01f0, save_everystep = false, save_start = false)
+
+end
+
+
+
+end
 
 
 #=

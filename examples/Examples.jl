@@ -27,7 +27,7 @@ using LinearAlgebra, NNlib, ComponentArrays, DifferentialEquations, CUDA, Sparse
 
 n = 64; #number of bases
 m = 64; 
-nObs = 1
+nObs = 50
 
 sigma = Float32(1/n); #width of each Gaussian
 w = gaussian_basis(n, m; sigma = sigma) #make gaussian basis
@@ -57,15 +57,15 @@ mo = DenseModule(l0, (l1,), l2, is_supervised = false)
 pcn = PCNet(mo)
 
 
-#pcn.odemodule.ps[1] .= w
-#pcn.odemodule.ps[2] .*= 0
-#pcn.odemodule.ps[2][diagind(pcn.odemodule.ps[2])] .= 1.0f0
-#pcn.odemodule.initializer!.ps[1] .*= 0
-#pcn.odemodule.initializer!.ps[2] .*= 0
+pcn.odemodule.ps[1] .= w
+pcn.odemodule.ps[2] .*= 0
+pcn.odemodule.ps[2][diagind(pcn.odemodule.ps[2])] .= 1.0f0
+pcn.odemodule.initializer!.ps[1] .*= 0
+pcn.odemodule.initializer!.ps[2] .*= 0
 
-@time pcn(x, (0.0f0, 10.0f0), abstol = 0.005f0, reltol = 0.01f0);
+@time pcn(x, (0.0f0, 10.0f0), abstol = 0.005f0, reltol = 0.1f0);
 
-obs = 1
+obs = 10
 yh = pcn.sol.u[end]
 scatterlines(yh.L1[:, obs])
 
@@ -85,7 +85,7 @@ to_gpu!(pcn)
 xc = cu(x)
 @time pcn(xc, (0.0f0, 10.0f0), abstol = 0.005f0, reltol = 0.01f0);
 
-obs = 1
+obs = 10
 yh = pcn.sol.u[end]
 scatterlines(Array(yh.L1)[:, obs])
 

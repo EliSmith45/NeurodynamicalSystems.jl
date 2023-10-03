@@ -14,8 +14,10 @@ export PCInput
 
 mutable struct PCInput
 
+    statesize
     states #NamedTuple{:errors, :predictions} giving the values that the layer above predicts for this layer and the prediction error
     name
+    T
 
 end
 
@@ -24,7 +26,7 @@ end
 
 function PCInput(in_dims::Tuple, name::Symbol, T = Float32)
     states = zeros(T, in_dims...)
-    PCInput(states, name)
+    PCInput(in_dims, states, name, T)
 end
 
 
