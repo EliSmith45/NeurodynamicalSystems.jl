@@ -6,7 +6,7 @@ dense connections. For training, multiple samples should be included in the inpu
 =#
 
 ########## External Dependencies ##########
-using LinearAlgebra, NNlib, ComponentArrays, OrdinaryDiffEq, CUDA
+using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, OrdinaryDiffEq, CUDA
 
 
 ########## Internal Dependencies ##########
@@ -53,12 +53,13 @@ end
 ########## Constructors ##########
 
 # Construct a dense hidden layer.
-function PCDense(in_dims, out_dims, name::Symbol, T = Float32; σ = relu, tc = 0.1f0, α = 0.01f0)
+function PCDense(in_dims, out_dims, name::Symbol, T = Float32; prop_zero = 0.5, σ = relu, tc = 0.1f0, α = 0.01f0)
 
-    #statesize = zeros(T, out_dims...)
     ps = rand(T, in_dims[1], out_dims[1])
-    broadcast!(relu, ps, ps)
-
+    nz = Int(round(prop_zero * length(ps)))
+    z = sample(1:length(ps), nz, replace = false)
+    ps[z] .= 0.0f0
+    
     grads = deepcopy(ps)
     ps2 = ps .^ 2
     receptiveFieldNorms = sum(ps2, dims = 1)
@@ -67,9 +68,9 @@ function PCDense(in_dims, out_dims, name::Symbol, T = Float32; σ = relu, tc = 0
     is_supervised = false
     labels = [1.0f0]
 
-    ps_initializer = rand(T, in_dims[1], out_dims[1])
-    grads_initializer = deepcopy(ps_initializer)
-    initializer! = DenseInitializer(ps_initializer, σ, grads_initializer, α)
+    ps_initializer = rand(T, in_dims[1], out_dims[1]) .- 0.5f0
+    #grads_initializer = deepcopy(ps_initializer)
+    initializer! = DenseInitializer(ps_initializer, σ, grads, α)
     
     PCDense(out_dims, ps, σ, grads, ps2, receptiveFieldNorms, tc, α, is_supervised, labels, name, T, initializer!)
 end
@@ -87,7 +88,7 @@ function (m::PCDense)(du_l, u_l, predictions_lm1, errors_lm1, errors_l)
         mul!(predictions_lm1, m.ps, u_l)
 
     else
-        broadcast!(m.σ, u_l, u_l)
+        u_l .= m.σ(u_l) 
         du_l .= mul!(du_l, transpose(m.ps), errors_lm1) .- errors_l
         mul!(predictions_lm1, m.ps, u_l)
     end
@@ -100,14 +101,8 @@ end
 function (m::PCDense)(errors_lm1, u_l)
    
     m.ps .+= (m.α / size(errors_lm1, 2)) .* mul!(m.grads, errors_lm1, transpose(u_l))
+    m.ps .= relu(m.ps)
 
-    #broadcast!(relu, m.ps[k], m.ps[k])
-    #m.ps2 .= m.ps .^ 2
-    #sum!(m.receptiveFieldNorms, m.ps2)
-    #m.ps ./= m.receptiveFieldNorms
-
-    #m.initializer!.ps .+= (m.α / size(errors_lm1, 2)) .* mul!(m.initializer!.grads, initerror, transpose(u0))
-    
 end
     
 
@@ -123,7 +118,7 @@ end
 # using the learnable feedforward network parameterized by ps.
 function (m::DenseInitializer)(initerror_l, u0_lm1, uT_l)
 
-    m.ps .+=  (m.α / size(initerror_l, 2)) .* mul!(m.grads, initerror_l, transpose(u0_lm1))
+    m.ps .+=  (m.α / size(initerror_l, 2)) .* mul!(m.grads, u0_lm1, transpose(initerror_l))
 
 end
 

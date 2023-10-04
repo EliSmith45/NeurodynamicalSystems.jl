@@ -2,7 +2,7 @@ module NeurodynamicalSystems
 
 
 ########## External Dependencies ##########
-using LinearAlgebra, NNlib, ComponentArrays, OrdinaryDiffEq, CUDA
+using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, OrdinaryDiffEq, CUDA
 
 ########## Internal Dependencies ##########
 include("./PCModules.jl")
