@@ -1,8 +1,8 @@
 # NeurodynamicalSystems
 
-NOTE: THIS PACKAGE IS STILL IN DEVELOPMENT AND NOT EVERYTHING WORKS PROPERLY YET!
+NOTE: THIS PACKAGE IS STILL IN DEVELOPMENT
 
-This is a high-performance machine learning library built around the predictive coding algorithm used by the human brain and other neurodynamical systems. It implements several standard predictive coding with hierarchical Gaussian models as well as other neural circuits observed in the brain. It can be used for anything in computer vision/listening, natural language processing, sparse coding, agent behavior control etc., or anything else you'd use deep learning for. 
+This is a high performance machine learning library built around the predictive coding algorithm used by the human brain and other neurodynamical systems. It implements several standard predictive coding with hierarchical Gaussian models as well as other neural circuits observed in the brain. It can be used for anything in computer vision/listening, natural language processing, sparse coding, agent behavior control etc., or anything else you'd use deep learning for. 
 
 It is fully GPU compatible and can be used for either supervised or unsupervised learning. Also, it's really fast!
 
