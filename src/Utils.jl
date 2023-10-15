@@ -8,7 +8,7 @@ Miscellaneous utility functions
 using NNlib, LinearAlgebra, CUDA
 
 ########## Exports ##########
-export nonneg_normalized!, gaussian_basis, sample_basis
+export nonneg_normalized!, gaussian_basis, sample_basis, pick_max!
 
 
 # Force all elements of an array to be nonnegative and normalize features by their L2 norm. 
@@ -109,5 +109,12 @@ function sample_basis(basis; nObs = 1, nActive = 2, maxCoherence = .999)
 
 end
 
+
+function pick_max!(x; dims = 1)
+    ind = argmax(x, dims = dims)
+    x .= 0.0f0
+    x[ind] .= 1.0f0
+end
+      
 end
 

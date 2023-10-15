@@ -69,12 +69,7 @@ guesses = Array(pcn.sol.u[end].L2)
 labels = Array(y)
 
 ########## Evaluation ##########
-function pick_max!(x)
-    ind = argmax(x, dims = 1)
-    x .= 0.0f0
-    x[ind] .= 1.0f0
-end
-            
+      
 
 pick_max!(guesses)
 guesses

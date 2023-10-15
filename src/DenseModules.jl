@@ -7,11 +7,7 @@ dense connections. For training, multiple samples should be included in the inpu
 
 ########## External Dependencies ##########
 using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, OrdinaryDiffEq, CUDA
-
-
-########## Internal Dependencies ##########
-#include("./Utils.jl")
-#using .Utils
+ 
 
 ########## Exports ##########
 export PCDense, DenseInitializer

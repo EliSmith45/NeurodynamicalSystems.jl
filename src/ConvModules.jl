@@ -60,7 +60,7 @@ end
 function PCConv(k, ch::Pair, in_dims, name::Symbol, T = Float32; prop_zero = 0.5, σ = relu, stride=1, padding=0, dilation=1, groups=1, tc = 1.0f0, α = 0.01f0)
 
   
-    ps = rand(T, in_dims[1], out_dims[1])
+    ps = rand(T, k..., ch[2], ch[1])
     nz = Int(round(prop_zero * length(ps)))
     z = sample(1:length(ps), nz, replace = false)
     ps[z] .= 0.0f0
@@ -70,17 +70,21 @@ function PCConv(k, ch::Pair, in_dims, name::Symbol, T = Float32; prop_zero = 0.5
     grads = deepcopy(ps)
     ps2 = deepcopy(ps) .^ 2
     receptiveFieldNorms = sum(ps2, dims = 1:(ndims(ps) - 1))
-    ps ./= receptiveFieldNorms
-
-    cdims = NNlib.DenseConvDims(in_dims, size(ps); stride = stride, padding = padding, dilation = dilation, groups = groups, flipkernel = true)
-    states = conv(zeros(T, in_dims), ps, cdims)
+    ps ./= (receptiveFieldNorms .+ eps())
+    
+    out_dims = [in_dims...]
+    out_dims[length(in_dims) - 1] = ch[2]
+    out_dims = Tuple(out_dims)
+    cdims = NNlib.DenseConvDims(out_dims, size(ps); stride = stride, padding = padding, dilation = dilation, groups = groups, flipkernel = true)
+    states = ∇conv_data(zeros(T, in_dims), ps, cdims)
     
     is_supervised = false
     labels = [false]
 
     ps_initializer = rand(T, k..., ch[1], ch[2]) .- 0.5f0
-    #grads_initializer = deepcopy(ps_initializer)
-    initializer! = ConvInitializer(ps_initializer, cdims, σ, grads, α)
+    grads_initializer = deepcopy(ps_initializer)
+    cdims_init = NNlib.DenseConvDims(in_dims, size(ps_initializer); stride = stride, padding = padding, dilation = dilation, groups = groups, flipkernel = true)
+    initializer! = ConvInitializer(ps_initializer, cdims_init, σ, grads_initializer, α)
    
     PCConv(size(states), ps, cdims, σ, grads, ps2, receptiveFieldNorms, tc, α, is_supervised, labels, name, T, initializer!)
 end
@@ -96,12 +100,12 @@ function (m::PCConv)(du_l, u_l, predictions_lm1, errors_lm1, errors_l)
     if m.is_supervised
         u_l .= m.labels
         du_l .= zero(eltype(du_l))
-        ∇conv_data!(predictions_lm1, u_l, m.ps, m.cdims)
+        conv!(predictions_lm1, u_l, m.ps, m.cdims)
 
     else
         u_l .= m.σ(u_l) #broadcast!(m.σ, u_l, u_l)
-        ∇conv_data!(predictions_lm1, u_l, m.ps, m.cdims)
-        du_l .= conv!(du_l, errors_lm1, m.ps, m.cdims) .- errors_l
+        conv!(predictions_lm1, u_l, m.ps, m.cdims)
+        du_l .= ∇conv_data!(du_l, errors_lm1, m.ps, m.cdims) .- errors_l
     end
 
 
@@ -112,16 +116,8 @@ end
 function (m::PCConv)(errors_lm1, u_l)
    
     m.ps[k] .+= ((m.α * size(u_l, ndims(u_l) - 1)) / prod(size(errors_lm1))) .* ∇conv_filter!(m.grads, errors_lm1, u_l, m.cdims)
-  
-    #broadcast!(relu, m.ps[k], m.ps[k])
-   # m.ps2 .= m.ps .^ 2
-    #sum!(m.receptiveFieldNorms, m.ps2)
-    #m.ps ./= m.receptiveFieldNorms
-
-   # m.initializer!.ps .+= (m.α / size(errors_lm1, 2)) .* mul!(m.initializer!.grads, initerror, transpose(u0))
-   # m.initializer!.ps[k] .+=  m.α[k] .* m.initializer!.grads[k]
-
-    
+    m.ps .= relu(m.ps)
+   
 end
     
 
@@ -137,7 +133,7 @@ end
 # using the learnable feedforward network parameterized by ps.
 function (m::ConvInitializer)(initerror_l, u0_lm1, uT_l)
 
-    m.ps .+= ((m.α * size(u_l, ndims(u_l) - 1)) / prod(size(errors_lm1))) .* ∇conv_filter!(m.grads, initerror_l, u0_lm1, m.cdims)
+    m.ps .+= ((m.α * size(u_l, ndims(u_l) - 1)) / prod(size(errors_lm1))) .* ∇conv_filter!(m.grads, u0_lm1, initerror_l, m.cdims)
 
 end
 

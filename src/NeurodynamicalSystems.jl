@@ -18,7 +18,7 @@ import .Utils: gaussian_basis, sample_basis
 ########## Exports ##########
 export PCDense, PCConv, PCInput, CompositeModule, PCNet
 export train!, reset!, to_gpu!, to_cpu!
-export gaussian_basis, sample_basis
+export gaussian_basis, sample_basis, pick_max!
 
 
 
