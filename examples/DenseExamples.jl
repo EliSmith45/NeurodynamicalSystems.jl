@@ -1,12 +1,13 @@
 using Pkg, CairoMakie
-cd("NeurodynamicalSystems"); #navigate to the package directory
+#cd("NeurodynamicalSystems"); #navigate to the package directory
 Pkg.activate(".");
 using Revise;
 using NeurodynamicalSystems;
 
 
-using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, DifferentialEquations, CUDA, MLDatasets
 
+using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, OrdinaryDiffEq, CUDA
+using Flux: Flux, DataLoader
 
 # Generate synthetic data from a given basis. The bases are discretely sampled Gaussians,
 # which is common in image and audio processing. These are 1D but could easily be generalized
@@ -24,16 +25,14 @@ using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, DifferentialE
 
 
 
-
-
 n = 64; #number of bases
 m = 64; 
-nObs = 1024
+nObs = 1024 * 1
 
 sigma = Float32(1/n); #width of each Gaussian
 w = gaussian_basis(n, m; sigma = sigma) #make gaussian basis
 
-x, y = sample_basis(w; nObs = nObs, nActive = 16, maxCoherence = .99) #sample from the basis
+x, y = sample_basis(w; nObs = nObs, nActive = 3, maxCoherence = .99) #sample from the basis
 y
 
 
@@ -49,143 +48,132 @@ f
 
 #layer sizes
 n0 = m
-n1 = 128
+n1 = 64
 n2 = 64
 
 #initialize layers
-l0 = PCInput((n0, nObs), :L0)
-l1 = PCDense((n0, nObs), (n1, nObs), :L1; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.05f0)
-l2 = PCDense((n1, nObs), (n2, nObs), :L2; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.05f0)
+l0 = PCStaticInput((n0, nObs), :L0)
+l1, init1 = PCDense((n0, nObs), (n1, nObs), :L1; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.05f0)
+l2, init2 = PCDense((n1, nObs), (n2, nObs), :L2; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.05f0)
 
 #initialize module and network
-mo = CompositeModule(l0, (l1, l2))
-pcn = PCNet(mo)
-to_gpu!(pcn)#move to GPU 
-xc = cu(x)#move to GPU 
-reset!(pcn)
+mo, initializer = PCModule(l0, (l1, l2), (init1, init2))
+fps = ODEIntegrator(mo; tspan = (0.0f0, 10.0f0), solver = BS3(), abstol = .01f0, reltol = .01f0, save_everystep = false, save_start = false, dt = 0.05f0, adaptive = true, dtmax = 1.0f0, dtmin = 0.001f0)
+pcn = PCNet(mo, initializer, fps)
+
+pcn.pcmodule.layers[1].ps .= w
+pcn.pcmodule.layers[2].ps .= zero(eltype(pcn.pcmodule.layers[2].ps))
+pcn.pcmodule.layers[2].ps[diagind(pcn.pcmodule.layers[2].ps)] .= ones(eltype(pcn.pcmodule.layers[2].ps))
+
+
 
 ########## Running the untrained network ##########
-@time pcn(xc, (0.0f0, 50.0f0), abstol = 0.01f0, reltol = 0.01f0);
+to_cpu!(pcn)
+@time sol = pcn(xx, maxSteps = 150, stoppingCondition = 0.05f0, reset_module = true);
 
-#viewing the results
-
-obs = 10
-yh = pcn.sol.u[end]
-scatterlines(Array(yh.L1)[:, obs])
-
-f = scatterlines(x[:, obs])
-scatterlines!(Array(pcn.odemodule.predictions.L0)[:, obs])
-#scatterlines!(Array(pcn.odemodule.errors.L0)[:, obs])
-f
+scatterlines(pcn.fixedPointSolver.errorLogs)
+scatterlines(pcn.fixedPointSolver.duLogs)
+length(fps.duLogs)
+minimum(fps.duLogs)
 
 
+obs = 1
+scatterlines(sol.L1[:, obs]) #plot the output of the first layer
+scatterlines(sol.L2[:, obs]) #plot the output of the second layer
+scatterlines(x[:, obs]) #plot the input data
+scatterlines(y[:, obs]) #plot the targets
+scatterlines(pcn.pcmodule.errors.L0[:, obs]) #plot the errors for the input layer
 
-f = scatterlines(Array(yh.L1)[:, obs])
-scatterlines!(Array(pcn.odemodule.u0.L1)[:, obs])
-#scatterlines!(Array(pcn.odemodule.errors.L0)[:, obs])
-f
+to_gpu!(pcn); #move to GPU 
+xc = cu(x) #move data to GPU 
+change_nObs!(pcn, 24)
+xc = xc[:, 1:24]
 
-heatmap(Array(pcn.odemodule.layers[1].ps))
-heatmap(Array(pcn.odemodule.layers[1].initializer!.ps))
+pcn.fixedPointSolver.dt 
+pcn.fixedPointSolver.c1
+reset!(pcn)
+@time solc = pcn(xc, maxSteps = 150, stoppingCondition = 0.05f0, reset_module = true); #run on GPU
+solc = to_cpu!(solc) #move output to cpu for plotting
+
+
+
+
+scatterlines(solc.L1[:, obs]) #plot the output of the first layer
+scatterlines(solc.L2[:, obs]) #plot the output of the second layer
+
+scatterlines(pcn.fixedPointSolver.errorLogs)
+scatterlines(pcn.fixedPointSolver.duLogs)
+length(fps.duLogs)
+minimum(fps.duLogs)
+
 
 ########## Training with unsupervised learning ##########
 
-reset!(pcn) #set all errors and predictions to 0
-@time train!(pcn, xc, (0.0f0, 35.0f0); iters = 2500, decayLrEvery = 500, lrDecayRate = 0.9f0, show_every = 10, normalize_every = 10000, abstol = 0.01f0, reltol = 0.01f0, stops = 25.0f0:1.0f0:35.0f0)
+n = 64; #number of bases
+m = 64; 
+nObs = 1024 * 4
 
-#viewing the results
-obs = 1
-yh = pcn.sol.u[end]
-scatterlines(Array(yh.L1)[:, obs])
+sigma = Float32(1/n); #width of each Gaussian
+w = gaussian_basis(n, m; sigma = sigma) #make gaussian basis
 
-f = scatterlines(x[:, obs])
-scatterlines!(Array(pcn.odemodule.predictions.L0)[:, obs])
-f
+x, y = sample_basis(w; nObs = nObs, nActive = 5, maxCoherence = .99) #sample from the basis
+y
 
-
-eachindex(pcn.odemodule.layers)
-
-heatmap(Array(pcn.odemodule.layers[1].ps))
-########## Training with supervised learning ##########
-
-yc = cu(y)
-@time pcn(xc, yc, (0.0f0, 50.0f0), abstol = 0.01f0, reltol = 0.01f0);
-
-yc
-pcn.sol.u[end].L2
-
-obs = 1
-yh = pcn.sol.u[end]
-scatterlines(Array(yh.L2)[:, obs])
-scatterlines(y[:, obs])
-
-f = scatterlines(x[:, obs])
-scatterlines!(Array(pcn.odemodule.predictions.L0)[:, obs])
-f
-
-
-
-########## Testing on MNIST ##########
-CUDA.memory_status()
-x = yh = f = pcn = y = yc = xc = l0 = l1 = l2 = 0
-GC.gc()
-
-x = MNIST(Tx = Float32, split = :train) #load MNIST data
-features = reshape(x.features, size(x.features, 1) * size(x.features, 2), size(x.features, 3)) #add the third (channel) dimension
-
-
-#get the labels in a floating point one-hot matrix
-labels = zeros(eltype(features), length(unique(x.targets)), length(x.targets))
-for i in eachindex(x.targets)
-    labels[x.targets[i] + 1, i] = 1.0f0
-end
-
-nObs = 512
-ind = StatsBase.sample(1:size(features, 2), nObs, replace = false)
-
-
-##### Initialize the network 
 
 #layer sizes
-n0 = size(features, 1)
-n1 = 32
-n2 = 10
+n0 = m
+n1 = 64
+n2 = 64
 
 #initialize layers
-l0 = PCInput((n0, nObs), :L0)
-l1 = PCDense((n0, nObs), (n1, nObs), :L1; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.01f0)
-l2 = PCDense((n1, nObs), (n2, nObs), :L2; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.01f0)
+l0 = PCStaticInput((n0, nObs), :L0)
+l1, init1 = PCDense((n0, nObs), (n1, nObs), :L1; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.5f0)
+l2, init2 = PCDense((n1, nObs), (n2, nObs), :L2; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.5f0)
 
 #initialize module and network
-mo = CompositeModule(l0, (l1, l2))
-pcn = PCNet(mo)
-to_gpu!(pcn)#move to GPU 
+mo, initializer = PCModule(l0, (l1, l2), (init1, init2))
+fps = ODEIntegrator(mo; tspan = (0.0f0, 10.0f0), solver = BS3(), abstol = .01f0, reltol = .01f0, save_everystep = false, save_start = false, dt = 0.05f0, adaptive = true, dtmax = 1.0f0, dtmin = 0.001f0)
+pcn = PCNet(mo, initializer, fps)
 
-x = cu(features[:, ind]) #move to GPU 
-y = cu(labels[:, ind])
+to_gpu!(pcn)
+xc = cu(x)
 
-reset!(pcn)
 
-########## Running the untrained network ##########
-@time pcn(x, y, (0.0f0, 50.0f0), abstol = 0.01f0, reltol = 0.01f0);
+bs = 1024 
+data = DataLoader(xc, batchsize = bs, partial = false, shuffle = true)
+data.batchsize
+GC.gc(true)
 
-obs = 1
-yh = pcn.sol.u[end]
-scatterlines(Array(yh.L2)[:, obs])
 
-f = scatterlines(Array(x[:, obs]))
-scatterlines!(Array(pcn.odemodule.predictions.L0)[:, obs])
-#scatterlines!(Array(pcn.odemodule.errors.L0)[:, obs])
+@time train!(pcn, data; maxSteps = 50, stoppingCondition = 0.05, maxFollowupSteps = 10, epochs = 100, trainstepsPerBatch = 20, decayLrEvery = 20, lrDecayRate = 0.85f0, show_every = 1, normalize_every = 1)
+
+to_cpu!(pcn)
+heatmap(pcn.pcmodule.layers[1].ps)
+heatmap(pcn.pcmodule.layers[2].ps)
+heatmap(pcn.initializer!.initializers[1].ps)
+to_gpu!(pcn)
+
+@time sol = pcn(first(data), maxSteps = 150, stoppingCondition = 0.045f0, reset_module = true);
+pcn.initializer!.isActive = true
+pcn.pcmodule.u0.L0
+pcn.initializer!(pcn.pcmodule.u0, first(data))
+pcn.initializer!.isActive = false
+to_cpu!(pcn)
+sol = to_cpu!(sol)
+
+obs = 888
+f = scatterlines(sol.L1[:, obs]) #plot the output of the first layer
+scatterlines!(pcn.pcmodule.u0.L1[:, obs])
 f
 
+sum(abs.(sol))
+sum(abs.(pcn.pcmodule.u0 .- sol))
+
+scatterlines(pcn.fixedPointSolver.errorLogs)
+scatterlines(pcn.fixedPointSolver.duLogs)
+length(fps.duLogs)
+minimum(fps.duLogs)
 
 
-########## Supervised Training ##########
-reset!(pcn) #set all errors and predictions to 0
-@time train!(pcn, x, y, (0.0f0, 35.0f0); iters = 1500, decayLrEvery = 100, lrDecayRate = 0.9f0, show_every = 10, normalize_every = 10000, abstol = 0.01f0, reltol = 0.01f0, stops = 25.0f0:1.0f0:35.0f0)
 
-mo.initerror.L1
-mo.u0.L0 * mo.initerror.L1'
-mo.layers[1].initializer!.ps
 
-scatterlines(Array(mo.u0.L0)[:, 1])

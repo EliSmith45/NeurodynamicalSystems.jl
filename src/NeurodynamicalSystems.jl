@@ -2,145 +2,31 @@ module NeurodynamicalSystems
 
 
 ########## External Dependencies ##########
-using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, OrdinaryDiffEq, CUDA
+using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, OrdinaryDiffEq, CUDA, Reexport
 
 ########## Internal Dependencies ##########
-include("./PCModules.jl")
+#include("./PCModules.jl")
 include("./PCNetworks.jl")
-#include("./GPUUtils.jl")
 include("./Utils.jl")
 
-using .PCModules
-using .PCNetworks
-#using .GPUUtils
+#using .PCModules
+@reexport using .PCNetworks
 import .Utils: gaussian_basis, sample_basis
 
 ########## Exports ##########
-export PCDense, PCConv, PCInput, CompositeModule, PCNet
-export train!, reset!, to_gpu!, to_cpu!
+#export PCDense, PCConv, PCStaticInput, PCDynamicInput, PCModule, ModuleInitializer, PCNet
+#export ODEIntegrator
+#export to_gpu!, to_cpu!
 export gaussian_basis, sample_basis, pick_max!
 
 
 
 
 
-########## Moving modules, initializers, and networks to/from gpu ##########
-
-function to_gpu!(x::PCInput)
-
-    x.states = cu(x.states)
-
-end
-
-function to_gpu!(x::PCDense)
-
-   
-    x.ps = cu(x.ps)
-    x.grads = cu(x.grads)
-    x.ps2 = cu(x.ps2)
-    x.receptiveFieldNorms = cu(x.receptiveFieldNorms)
-    x.tc = cu(x.tc)
-    x.α = cu(x.α)
-    
-    x.labels = cu(x.labels)
-    to_gpu!(x.initializer!)
-
-end
-
-
-function to_gpu!(x::PCConv)
-
-    x.ps = cu(x.ps)
-    x.grads = cu(x.grads)
-    x.ps2 = cu(x.ps2)
-    x.receptiveFieldNorms = cu(x.receptiveFieldNorms)
-    x.tc = cu(x.tc)
-    x.α = cu(x.α)
-    
-    x.labels = cu(x.labels)
-    to_gpu!(x.initializer!)
-
-end
-
-function to_gpu!(x::CompositeModule)
-
-    to_gpu!(x.inputlayer)
-
-    for hl in x.layers
-        to_gpu!(hl)
-    end
-
-  
-    x.u0 = cu(x.u0)
-    x.predictions = cu(x.predictions)
-    x.errors = cu(x.errors)
-    x.initerror = cu(x.initerror)
-  
-end
-
-function to_gpu!(x::DenseInitializer)
-
-    x.ps = cu(x.ps)
-    x.grads = cu(x.grads)
-    #x.α = cu(x.α)
-    #x.errors = cu(x.errors)
-   
-end
 
 
 
-function to_gpu!(x::ConvInitializer)
 
-    x.ps = cu(x.ps)
-    x.grads = cu(x.grads)
-   # x.α = cu(x.α)
-   
-end
-
-
-function to_gpu!(x::PCNet)
-    to_gpu!(x.odemodule)
-    x.odeprob = ODEProblem(x.odemodule, x.odemodule.u0, (0.0f0, 1.0f0), Float32[])
-    x.sol = solve(x.odeprob, BS3(), abstol = 0.01f0, reltol = 0.01f0, save_everystep = false, save_start = false)
-
-end
-
-
-function to_cpu!(x::ComponentArray)
-
-    names = keys(x)
-    x = ComponentArray(NamedTuple{names}(Array.(values(NamedTuple(x)))))
-
-end
-
-
-
-function to_cpu!(x::DenseInitializer)
-
-    x.ps = Array.(x.ps)
-    x.grads = Array.(x.grads)
-    x.α = Array(x.α)
-    x.errors = to_cpu!(x.errors)
-   
-end
-
-
-function to_cpu!(x::ConvInitializer)
-
-    x.ps = Array.(x.ps)
-    x.grads = Array.(x.grads)
-    x.α = Array(x.α)
-    x.errors = to_cpu!(x.errors)
-
-end
-
-
-function to_cpu!(x::PCNet)
-    to_cpu!(x.odemodule)
-    x.odeprob = ODEProblem(x.odemodule, x.odemodule.u0, (0.0f0, 1.0f0), Float32[])
-    x.sol = solve(x.odeprob, BS3(), abstol = 0.01f0, reltol = 0.01f0, save_everystep = false, save_start = false)
-
-end
 
 
 

@@ -5,7 +5,7 @@ using Revise;
 using NeurodynamicalSystems;
 
 
-using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, DifferentialEquations, CUDA, MLDatasets
+using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, OrdinaryDiffEq, CUDA, MLDatasets
 
 
 x = MNIST(Tx = Float32, split = :train) #load MNIST data
@@ -18,7 +18,7 @@ for i in eachindex(x.targets)
     labels[x.targets[i] + 1, i] = 1.0f0
 end
 
-nObs = 4096
+nObs = 128
 ind = StatsBase.sample(1:size(features, 2), nObs, replace = false)
 
 
@@ -35,7 +35,7 @@ l1 = PCDense((n0, nObs), (n1, nObs), :L1; prop_zero = 0.5, σ = relu, tc = 1.0f0
 l2 = PCDense((n1, nObs), (n2, nObs), :L2; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.05f0)
 
 #initialize module and network
-mo = CompositeModule(l0, (l1, l2))
+mo = PCModule(l0, (l1, l2))
 pcn = PCNet(mo)
 to_gpu!(pcn)#move to GPU 
 
@@ -45,14 +45,30 @@ y = cu(labels[:, ind])
 reset!(pcn)
 
 ########## Running the untrained network ##########
-@time pcn(x, y, (0.0f0, 35.0f0), abstol = 0.01f0, reltol = 0.01f0);
 
-obs = 1
+@time pcn(x, y; tspan = (0.0f0, 35.0f0), abstol = 0.01f0, reltol = 0.01f0, save_everystep = false);
+
+obs = 10
 yh = pcn.sol.u[end]
-scatterlines(Array(yh.L2)[:, obs])
+scatterlines(Array(yh.L1)[:, obs])
+
+tspan = (0.0f0, 35.0f0)
+ abstol = 0.01f0
+ reltol = 0.01f0 
+ save_everystep = false
+
+@time odeprob = ODEProblem(pcn.odemodule, pcn.odemodule.u0, tspan, Float32[]);
+@time integrator = init(odeprob, BS3(), abstol = abstol, reltol = reltol, save_everystep = save_everystep, save_start = false);
+odeprob.u0.L0 .= x
 
 
 
+@time solve!(integrator);
+
+lines(Array(integrator.sol.u[1].L1[:, 10]))
+lines(Array(odeprob.u0.L0[:, 10]))
+
+integrator.sol
 
 
 ########## Supervised Training ##########
