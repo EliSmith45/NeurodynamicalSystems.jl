@@ -74,45 +74,6 @@ function PCModules.change_nObs!(pcn::PCNet, nObs::Int)
 end
 
 
-#=
-
-
-
-function change_nObs!(m::PCModule, nObs::Int)
-    
-    isGPU = m.inputlayer.states isa CuArray
-
-    layers = (m.inputlayer, m.layers...)
-    names = map(l -> l.name, layers)
-    for i in eachindex(layers)
-        newsize = Tuple([layers[i].statesize[1:(end - 1)]..., nObs])
-        layers[i].statesize = newsize
-
-    end
-
-    newsize = Tuple([layers[1].statesize[1:(end - 1)]..., nObs])
-    layers[1].states = zeros(layers[1].T, newsize)
-
-    errors = NamedTuple{names}(map(l -> zeros(l.T, l.statesize), layers))
-    predictions = NamedTuple{names}(map(l -> zeros(l.T, l.statesize), layers))
-    u0 = NamedTuple{names}(map(l -> zeros(l.T, l.statesize), layers))
-   
-    m.errors = ComponentArray(errors)
-    m.predictions = ComponentArray(predictions)
-    m.u0 = ComponentArray(u0)
-    
-    if isGPU
-        m.errors = cu(m.errors)
-        m.predictions = cu(m.predictions)
-        m.u0 = cu(m.u0)
-        layers[1].states = cu(layers[1].states)
-    end
-    layers[end].labels = deepcopy(values(m.u0)[end])
-end
-
-=#
-
-
 # Makes PCNetwork callable for unsupervised learning. This sets the input parameters to x before running the ODE system.
 function (m::PCNet)(x::Union{Array, CuArray}; maxSteps = 100, stoppingCondition = 0.01f0, reset_module = true)
     
@@ -144,7 +105,7 @@ function (m::PCNet)(x::Union{Array, CuArray}, y::Union{Array, CuArray}; maxSteps
     
     #assign input data
     m.pcmodule.inputlayer.states .= x
-    m.pcmodule.layers[end].labels .= y
+    values(NamedTuple(m.pcmodule.labels))[end] .= y
     #calculate u0 with initializer network if error is low enough, otherwise initialize with zeros
     m.initializer!(m.pcmodule.u0, x)
 
@@ -209,7 +170,7 @@ end
 
 
 # Trains the PCNetwork in an unsupervised manner. Uses a discrete callback function to pause the ODE solver at the times in stops and update each layers' parameters.
-function train!(m::PCNet, x::Flux.DataLoader{W} ; maxSteps = 50, stoppingCondition = 0.05, maxFollowupSteps = 10, epochs = 1, trainstepsPerBatch = 1, decayLrEvery = 500, lrDecayRate = 0.85f0, show_every = 10, normalize_every = 1000) where W <: Union{Array, CuArray}
+function train!(m::PCNet, x::Flux.DataLoader{W}; maxSteps = 50, stoppingCondition = 0.05, maxFollowupSteps = 10, epochs = 1, trainstepsPerBatch = 1, decayLrEvery = 500, lrDecayRate = 0.85f0, show_every = 10, normalize_every = 1000) where W <: Union{Array, CuArray}
 
     nObs = size(m.pcmodule.inputlayer.states)[end]
     
@@ -295,7 +256,7 @@ function train!(m::PCNet, x::Flux.DataLoader{W} ; maxSteps = 50, stoppingConditi
 end
 
 # Trains the PCNetwork in a supervised manner. Uses a discrete callback function to pause the ODE solver at the times in stops and update each layers' parameters.
-function train!(m::PCNet, x::DataLoader{NamedTuple{(:data, :label), Tuple{W, W}}} , tspan = (0.0f0, 100.0f0); solver = BS3(), epochs = 1, stops = [tspan[1], (tspan[2] - tspan[1]) / 2, tspan[2]], decayLrEvery = 500, lrDecayRate = 0.85f0, show_every = 10, normalize_every = 10000, abstol = 0.01f0, reltol = 0.05f0, save_everystep = false) where W <: Union{Array, CuArray}
+function train!(m::PCNet, x::DataLoader{NamedTuple{(:data, :label), Tuple{W, W}}}; maxSteps = 50, stoppingCondition = 0.05, maxFollowupSteps = 10, epochs = 1, trainstepsPerBatch = 1, decayLrEvery = 500, lrDecayRate = 0.85f0, show_every = 10, normalize_every = 1000) where W <: Union{Array, CuArray}
     
     nObs = size(m.pcmodule.inputlayer.states)[end]
     
@@ -341,19 +302,21 @@ function train!(m::PCNet, x::DataLoader{NamedTuple{(:data, :label), Tuple{W, W}}
 
             end
 
-            error[i] += m.fixedPointSolver.errorLogs[end]
-            m.fixedPointSolver.c1 .= abs.(m.initializer!.initerror)
-            initerror[i] += sum(m.fixedPointSolver.c1)
-
-            if sum(m.fixedPointSolver.c1) < sum(m.fixedPointSolver.u)
-                m.initializer!.isActive = true
-            else
-                m.initializer!.isActive = false
+            for k in eachindex(m.pcmodule.layers)
+                m.pcmodule.layers[k].ps2 .= m.pcmodule.layers[k].ps .^ 2
+                sum!(m.pcmodule.layers[k].receptiveFieldNorms, m.pcmodule.layers[k].ps2)
+                m.pcmodule.layers[k].receptiveFieldNorms .= sqrt.(m.pcmodule.layers[k].receptiveFieldNorms)
+                m.pcmodule.layers[k].ps ./= (eps() .+ m.pcmodule.layers[k].receptiveFieldNorms)
             end
 
         end
 
           
+        error[i] = m.fixedPointSolver.errorLogs[end]
+        m.fixedPointSolver.c1 .= abs.(m.initializer!.initerror)
+        initerror[i] += sum(m.fixedPointSolver.c1)
+
+
         if i % decayLrEvery == 0
             for k in eachindex(m.pcmodule.layers)
                 m.pcmodule.layers[k].α *= lrDecayRate

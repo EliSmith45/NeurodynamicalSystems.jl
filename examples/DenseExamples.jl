@@ -116,7 +116,7 @@ nObs = 1024 * 4
 sigma = Float32(1/n); #width of each Gaussian
 w = gaussian_basis(n, m; sigma = sigma) #make gaussian basis
 
-x, y = sample_basis(w; nObs = nObs, nActive = 5, maxCoherence = .99) #sample from the basis
+x, y = sample_basis(w; nObs = nObs, nActive = 10, maxCoherence = .99) #sample from the basis
 y
 
 
@@ -145,7 +145,7 @@ data.batchsize
 GC.gc(true)
 
 
-@time train!(pcn, data; maxSteps = 50, stoppingCondition = 0.05, maxFollowupSteps = 10, epochs = 100, trainstepsPerBatch = 20, decayLrEvery = 20, lrDecayRate = 0.85f0, show_every = 1, normalize_every = 1)
+@time train!(pcn, data; maxSteps = 50, stoppingCondition = 0.05, maxFollowupSteps = 10, epochs = 500, trainstepsPerBatch = 20, decayLrEvery = 20, lrDecayRate = 0.85f0, show_every = 1, normalize_every = 1)
 
 to_cpu!(pcn)
 heatmap(pcn.pcmodule.layers[1].ps)
@@ -162,12 +162,12 @@ to_cpu!(pcn)
 sol = to_cpu!(sol)
 
 obs = 888
-f = scatterlines(sol.L1[:, obs]) #plot the output of the first layer
-scatterlines!(pcn.pcmodule.u0.L1[:, obs])
+f = scatterlines(sol.L2[:, obs]) #plot the output of the first layer
+scatterlines!(pcn.pcmodule.u0.L2[:, obs])
 f
 
-sum(abs.(sol))
-sum(abs.(pcn.pcmodule.u0 .- sol))
+sum(abs.(sol.L1))
+sum(abs.(pcn.pcmodule.u0.L1 .- sol.L1))
 
 scatterlines(pcn.fixedPointSolver.errorLogs)
 scatterlines(pcn.fixedPointSolver.duLogs)
