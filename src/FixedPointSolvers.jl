@@ -5,7 +5,34 @@ module FixedPointSolvers
 
 # External Dependencies
 using LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, OrdinaryDiffEq, CUDA
- 
+
+# Internal Dependencies
+include("./PCModules.jl")
+using .PCModules
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Exported data structures and functions
 export ODEIntegrator
@@ -65,9 +92,9 @@ function (m::ODEIntegrator)(maxSteps::Int, stoppingCondition)
         m.errorLogs[i] = sum(m.c1)
         
         m.c1 .= abs.(m.du)
-        m.c2 .= abs.(m.u)
+        m.c2 .= m.u .^ 2
 
-        m.duLogs[i] = sum(m.c1) / (eps() + sum(m.c2))
+        m.duLogs[i] = dot(m.c1, m.u) / (eps() + sum(m.c2))
 
         if m.duLogs[i] < stoppingCondition 
             m.errorLogs = @view(m.errorLogs[1:i])

@@ -2,15 +2,19 @@ module NeurodynamicalSystems
 
 
 ########## External Dependencies ##########
-using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, OrdinaryDiffEq, CUDA, Reexport
+using StatsBase, LinearAlgebra, NNlib, ComponentArrays, OrdinaryDiffEq, CUDA, NNlibCUDA, Reexport
 
 ########## Internal Dependencies ##########
-#include("./PCModules.jl")
 include("./PCNetworks.jl")
+@reexport using .PCNetworks
+
+#include("./PCNetworks.jl")
 include("./Utils.jl")
+#include("./PCDense.jl")
+#@reexport using .PCDenseLayers2
 
 #using .PCModules
-@reexport using .PCNetworks
+#@reexport using .PCNetworks
 import .Utils: gaussian_basis, sample_basis
 
 ########## Exports ##########
@@ -18,7 +22,6 @@ import .Utils: gaussian_basis, sample_basis
 #export ODEIntegrator
 #export to_gpu!, to_cpu!
 export gaussian_basis, sample_basis, pick_max!
-
 
 
 

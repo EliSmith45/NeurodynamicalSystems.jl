@@ -1,12 +1,12 @@
-using Pkg, CairoMakie
+#using Pkg# , CairoMakie
 #cd("NeurodynamicalSystems"); #navigate to the package directory
-Pkg.activate(".");
+#Pkg.activate(".");
 using Revise;
 using NeurodynamicalSystems;
 
 
 
-using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, OrdinaryDiffEq, CUDA
+using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, CUDA, CairoMakie
 using Flux: Flux, DataLoader
 
 # Generate synthetic data from a given basis. The bases are discretely sampled Gaussians,
@@ -46,97 +46,105 @@ f
 
 ########## Initialize the network ##########
 
-#layer sizes
-n0 = m
-n1 = 64
-n2 = 64
+#layer dimensions, must be a tuple
+n0 = (n,)
+
+n1 = (m,)
+n2 = (m,)
 
 #initialize layers
-l0 = PCStaticInput((n0, nObs), :L0)
-l1, init1 = PCDense((n0, nObs), (n1, nObs), :L1; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.05f0)
-l2, init2 = PCDense((n1, nObs), (n2, nObs), :L2; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.05f0)
-
-#initialize module and network
-mo, initializer = PCModule(l0, (l1, l2), (init1, init2))
-fps = ODEIntegrator(mo; tspan = (0.0f0, 10.0f0), solver = BS3(), abstol = .01f0, reltol = .01f0, save_everystep = false, save_start = false, dt = 0.05f0, adaptive = true, dtmax = 1.0f0, dtmin = 0.001f0)
-pcn = PCNet(mo, initializer, fps)
-
-pcn.pcmodule.layers[1].ps .= w
-pcn.pcmodule.layers[2].ps .= zero(eltype(pcn.pcmodule.layers[2].ps))
-pcn.pcmodule.layers[2].ps[diagind(pcn.pcmodule.layers[2].ps)] .= ones(eltype(pcn.pcmodule.layers[2].ps))
 
 
-
-########## Running the untrained network ##########
-to_cpu!(pcn)
-@time sol = pcn(xx, maxSteps = 150, stoppingCondition = 0.05f0, reset_module = true);
-
-scatterlines(pcn.fixedPointSolver.errorLogs)
-scatterlines(pcn.fixedPointSolver.duLogs)
-length(fps.duLogs)
-minimum(fps.duLogs)
+l0 = PCStaticInput(n0, :L0)
+l1 = PCDense2(n1, n0, relu, 0.1f0, false, :L1, Float32)
+l2 = PCDense2(n2, n1, relu, 0.1f0, false, :L2, Float32)
+mo = PCModule(l0, (l1, l2))
 
 
-obs = 1
-scatterlines(sol.L1[:, obs]) #plot the output of the first layer
-scatterlines(sol.L2[:, obs]) #plot the output of the second layer
-scatterlines(x[:, obs]) #plot the input data
-scatterlines(y[:, obs]) #plot the targets
-scatterlines(pcn.pcmodule.errors.L0[:, obs]) #plot the errors for the input layer
+fSolver = forwardES1(mo, dt = 0.15f0)
+bSolver = backwardES1(mo, dt = 0.01f0)
+
+pcn = Pnet(mo, fSolver, bSolver)
+pcn.mo.ps.params.L1 .= w
+pcn.mo.ps.params.L2 .= 0
+pcn.mo.ps.params.L2[diagind(pcn.mo.ps.params.L2)] .= 1
+
+
+########## Running the network with the known optimal weights ##########
+
+
+@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
+get_states(pcn)
+
+f = scatterlines(get_states(pcn).L1[:, 1])
+scatterlines!(y[:, 1])
+f
+
+scatterlines(get_du_logs(pcn))
+scatterlines(get_error_logs(pcn))
 
 to_gpu!(pcn); #move to GPU 
 xc = cu(x) #move data to GPU 
-change_nObs!(pcn, 24)
-xc = xc[:, 1:24]
-
-pcn.fixedPointSolver.dt 
-pcn.fixedPointSolver.c1
-reset!(pcn)
-@time solc = pcn(xc, maxSteps = 150, stoppingCondition = 0.05f0, reset_module = true); #run on GPU
-solc = to_cpu!(solc) #move output to cpu for plotting
 
 
+@time pcn(xc; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
 
+to_cpu!(pcn)
+get_states(pcn)
 
-scatterlines(solc.L1[:, obs]) #plot the output of the first layer
-scatterlines(solc.L2[:, obs]) #plot the output of the second layer
+f = scatterlines(get_states(pcn).L1[:, 1])
+scatterlines!(y[:, 1])
+f
+scatterlines(get_u0(pcn).L1[:, 1])
 
-scatterlines(pcn.fixedPointSolver.errorLogs)
-scatterlines(pcn.fixedPointSolver.duLogs)
-length(fps.duLogs)
-minimum(fps.duLogs)
+scatterlines(get_du_logs(pcn))
+scatterlines(get_error_logs(pcn))
+heatmap(get_model_parameters(pcn).L1)
+
 
 
 ########## Training with unsupervised learning ##########
 
-n = 64; #number of bases
-m = 64; 
-nObs = 1024 * 4
+#layer dimensions, must be a tuple
+n0 = (n,)
 
-sigma = Float32(1/n); #width of each Gaussian
-w = gaussian_basis(n, m; sigma = sigma) #make gaussian basis
-
-x, y = sample_basis(w; nObs = nObs, nActive = 10, maxCoherence = .99) #sample from the basis
-y
-
-
-#layer sizes
-n0 = m
-n1 = 64
-n2 = 64
+n1 = (m,)
+n2 = (m,)
 
 #initialize layers
-l0 = PCStaticInput((n0, nObs), :L0)
-l1, init1 = PCDense((n0, nObs), (n1, nObs), :L1; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.5f0)
-l2, init2 = PCDense((n1, nObs), (n2, nObs), :L2; prop_zero = 0.5, σ = relu, tc = 1.0f0, α = 0.5f0)
 
-#initialize module and network
-mo, initializer = PCModule(l0, (l1, l2), (init1, init2))
-fps = ODEIntegrator(mo; tspan = (0.0f0, 10.0f0), solver = BS3(), abstol = .01f0, reltol = .01f0, save_everystep = false, save_start = false, dt = 0.05f0, adaptive = true, dtmax = 1.0f0, dtmin = 0.001f0)
-pcn = PCNet(mo, initializer, fps)
+
+l0 = PCStaticInput(n0, :L0)
+l1 = PCDense2(n1, n0, relu, 0.1f0, false, :L1, Float32)
+l2 = PCDense2(n2, n1, relu, 0.1f0, false, :L2, Float32)
+mo = PCModule(l0, (l1, l2))
+
+
+fSolver = forwardES1(mo, dt = 0.1f0)
+bSolver = backwardES1(mo, dt = 0.01f0)
+
+pcn = Pnet(mo, fSolver, bSolver)
+
 
 to_gpu!(pcn)
 xc = cu(x)
+
+@time trainSteps!(pcn, xc; maxIters = 50, stoppingCondition = 0.01f0, trainingSteps = 100, followUpRuns = 10, maxFollowUpIters = 10)
+to_cpu!(pcn)
+scatterlines(get_error_logs(pcn))
+scatterlines(get_du_logs(pcn))
+
+heatmap(get_model_parameters(pcn).L1)
+
+
+heatmap(get_initializer_parameters(pcn).L1')
+
+scatterlines(get_u0(pcn).L1[:, 1])
+
+@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = true, reset_states = true)
+
+
+
 
 
 bs = 1024 
@@ -145,7 +153,7 @@ data.batchsize
 GC.gc(true)
 
 
-@time train!(pcn, data; maxSteps = 50, stoppingCondition = 0.05, maxFollowupSteps = 10, epochs = 500, trainstepsPerBatch = 20, decayLrEvery = 20, lrDecayRate = 0.85f0, show_every = 1, normalize_every = 1)
+@time train!(pcn, data; maxSteps = 50, stoppingCondition = 0.01, maxFollowupSteps = 10, epochs = 500, trainstepsPerBatch = 20, decayLrEvery = 20, lrDecayRate = 0.85f0, show_every = 1, normalize_every = 1000)
 
 to_cpu!(pcn)
 heatmap(pcn.pcmodule.layers[1].ps)
