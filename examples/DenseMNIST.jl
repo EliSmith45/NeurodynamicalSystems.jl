@@ -66,9 +66,7 @@ fSolver = forwardES1(mo, dt = 0.000001f0, maxSteps = 25)
 bSolver = backwardES1(mo, dt = 0.000001f0, maxSteps = 25)
 
 pcn = Pnet(mo, fSolver, bSolver)
-x = ones(Float32, n0[1], 5000)
-
-@time pcn(x)
+x = ones(Float32, n0[1], 5000)CommonFunctions.
 
 @time backwardSolverStep!(pcn.psOpt)
 @time trainSteps!(pcn, x; steps = 1, followUpRuns = 1, maxFollowUpSteps = 5)

@@ -39,7 +39,7 @@ end
 function change_kwgs!(m::PCNet; tspan = (0.0f0, 10.0f0), solver = BS3(), abstol = .01f0, reltol = .01f0, save_everystep = false, save_start = false)
 
     ode = ODEProblem(m.odemodule, m.odeprob.u0, tspan, Float32[])
-    integrator = init(ode, solver, abstol = abstol, reltol = reltol, save_everystep = save_everystep, save_start = save_start);
+    integrator = init(ode, solver, abstol = abstol, reltol = reltol, save_everystep = save_everystep, save_start = save_start) ;
     m.odeprob = ode
     m.integrator = integrator
 

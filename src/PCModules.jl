@@ -4,11 +4,12 @@ module PCModules
 using StatsBase, LinearAlgebra, NNlib, NNlibCUDA, ComponentArrays, CUDA, Reexport
 
 # Internal Dependencies
-include("./PCDense.jl")
+include("./PCLayers.jl")
 
-@reexport using .PCDenseLayers2
+@reexport using .PCLayers
 
-export PCModule, normalize_receptive_fields!
+
+export PCModule, normalize_receptive_fields!, to_cpu!, to_gpu!
 
 
 
@@ -53,11 +54,11 @@ Constructor for predictive coding modules
 """
 function PCModule(inputlayer, hiddenlayers)
 
-    nObs = size(inputlayer.input, ndims(inputlayer.input))
+    nObs = size(inputlayer.data, ndims(inputlayer.data))
     layers = (inputlayer, hiddenlayers...)
     names = map(l -> l.name, layers)
 
-    predictions, errors, u, du, u0, initerror = allocate_states(layers, nObs)
+    predictions, errors, u, du, u0, initerror = allocate_states(layers)
     ps, psgrads, receptiveFieldNorms = allocate_params(hiddenlayers)
 
     m = PCModule(nObs, inputlayer, hiddenlayers, predictions, errors, u, du, u0, initerror, ps, psgrads, receptiveFieldNorms)
@@ -66,20 +67,21 @@ function PCModule(inputlayer, hiddenlayers)
 
 end
 
-function CommonFunctions.change_nObs!(m::PCModule, nObs)
+function PCLayers.change_nObs!(m::PCModule, nObs)
     m.nObs = nObs
-    m.predictions, m.errors, m.u, m.du, m.u0, m.initerror = allocate_states((m.inputlayer, m.layers...), nObs)
-    m.inputlayer.input = zeros(eltype(m.inputlayer.input), size(m.inputlayer.input)[1:end-1]..., nObs)
+    map(l -> change_nObs!(l, nObs), (m.inputlayer, m.layers...))
+    m.predictions, m.errors, m.u, m.du, m.u0, m.initerror = allocate_states((m.inputlayer, m.layers...))
+    #m.inputlayer.data = zeros(eltype(m.inputlayer.input), size(m.inputlayer.input)[1:end-1]..., nObs)
 
     if values(NamedTuple(m.ps.params))[1] isa CuArray
         to_gpu!(m)
     end
 end
 
-function CommonFunctions.allocate_states(layers, nObs)
+function PCLayers.allocate_states(layers)
 
     names = map(l -> l.name, layers)
-    predictions = NamedTuple{names}(map(l -> zeros(l.T, l.statesize..., nObs), layers))
+    predictions = NamedTuple{names}(map(l -> allocate_states(l), layers))
     predictions = ComponentArray(predictions)
 
     errors = deepcopy(predictions)
@@ -91,10 +93,10 @@ function CommonFunctions.allocate_states(layers, nObs)
     return predictions, errors, u, du, u0, initerror
 end
 
-function CommonFunctions.allocate_params(hiddenlayers::Tuple)
+function PCLayers.allocate_params(hiddenlayers::Tuple)
 
     names = map(l -> l.name, hiddenlayers)
-    params = NamedTuple{names}(map(l -> allocate_params(l), hiddenlayers))
+    params = NamedTuple{names}(map(l -> PCLayers.allocate_params(l), hiddenlayers))
     initps = NamedTuple{names}(map(l -> allocate_initparams(l), hiddenlayers))
     ps = ComponentArray(params = ComponentArray(params), initps = ComponentArray(initps))
     psgrads = deepcopy(ps)
@@ -105,9 +107,9 @@ function CommonFunctions.allocate_params(hiddenlayers::Tuple)
     return ps, psgrads, receptiveFieldNorms
 end
 
-function CommonFunctions.get_gradient_activations!(m::PCModule, x)
+function PCLayers.get_gradient_activations!(m::PCModule, x)
     
-    m.inputlayer.input = x
+    m.inputlayer.data = x
     get_gradient_activations!(values(NamedTuple(m.du))[1], values(NamedTuple(m.u))[1], m.inputlayer, values(NamedTuple(m.errors))[1])
 
     for k in eachindex(m.layers)
@@ -122,7 +124,34 @@ function CommonFunctions.get_gradient_activations!(m::PCModule, x)
 
 end
 
-function CommonFunctions.get_gradient_parameters!(m::PCModule)
+
+function PCLayers.get_gradient_activations!(m::PCModule, x, y)
+    
+    # set input layer to x
+    m.inputlayer.data = x
+    get_gradient_activations!(values(NamedTuple(m.du))[1], values(NamedTuple(m.u))[1], m.inputlayer, values(NamedTuple(m.errors))[1])
+
+    # make predictions for each layer
+    for k in eachindex(m.layers)
+        make_predictions!(values(NamedTuple(m.predictions))[k], m.layers[k], values(NamedTuple(m.ps.params))[k], values(NamedTuple(m.u))[k + 1])
+    end
+
+    # set the last layer's predicted value to its state so its error will be zero (as nothing predicts the top layer)
+    values(NamedTuple(m.predictions))[end] .= values(NamedTuple(m.u))[end]
+    m.errors .= m.u .- m.predictions
+
+    # get the gradient of the errors with respect to the activations for each layer except the last
+    for k in 1:(length(m.layers) - 1)
+        get_gradient_activations!(values(NamedTuple(m.du))[k + 1], m.layers[k], values(NamedTuple(m.errors))[k], values(NamedTuple(m.errors))[k + 1], values(NamedTuple(m.ps.params))[k])
+    end
+
+    # set the last layer's state to the labels y and set its gradient to zero (as this layer is pinned to the label values)
+    m.u[m.layers[end].name] .= y
+    m.du[m.layers[end].name] .= 0
+
+end
+
+function PCLayers.get_gradient_parameters!(m::PCModule)
     for k in eachindex(m.layers)
         get_gradient_parameters!(values(NamedTuple(m.psgrads.params))[k], m.layers[k], values(NamedTuple(m.errors))[k], values(NamedTuple(m.u))[k + 1])
         get_gradient_init_parameters!(values(NamedTuple(m.psgrads.initps))[k], m.layers[k], values(NamedTuple(m.initerror))[k + 1], values(NamedTuple(m.u))[k])
@@ -138,8 +167,8 @@ function normalize_receptive_fields!(m::PCModule)
 end
 
 
-function CommonFunctions.get_u0!(m::PCModule, x)
-    m.inputlayer.input = x
+function PCLayers.get_u0!(m::PCModule, x)
+    m.inputlayer.data = x
     values(NamedTuple(m.u0))[1] .= x
 
     for k in eachindex(m.layers)
@@ -151,9 +180,9 @@ end
 
 
 
-function CommonFunctions.to_gpu!(m::PCModule)
+function to_gpu!(m::PCModule)
     
-    m.inputlayer.input = cu(m.inputlayer.input)
+    m.inputlayer.data = cu(m.inputlayer.data)
     m.predictions = cu(m.predictions)
     m.errors = cu(m.errors)
     m.u = cu(m.u)
@@ -166,9 +195,9 @@ function CommonFunctions.to_gpu!(m::PCModule)
 
 end
 
-function CommonFunctions.to_cpu!(m::PCModule)
+function to_cpu!(m::PCModule)
     
-    m.inputlayer.input = Array(m.inputlayer.input)
+    m.inputlayer.data = Array(m.inputlayer.data)
     m.predictions = to_cpu!(m.predictions)
     m.errors = to_cpu!(m.errors)
     m.u = to_cpu!(m.u)
@@ -184,14 +213,14 @@ end
 
 
 
-function CommonFunctions.to_cpu!(x::ComponentArray)
+function to_cpu!(x::ComponentArray)
 
     names = keys(x)
     x = ComponentArray(NamedTuple{names}(Array.(values(NamedTuple(x)))))
 
 end
 
-function CommonFunctions.to_cpu!(x::Array)
+function to_cpu!(x::Array)
 
     x = Array(x)
 
