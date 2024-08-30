@@ -61,7 +61,8 @@ function trainSteps!(m::Pnet, trainingData::Flux.DataLoader{W}; maxIters = 50, s
     
     for i in 1:trainingSteps
         for x in trainingData
-            m(x; maxIters = maxIters, stoppingCondition = stoppingCondition, use_neural_initializer = false, reset_states = true)
+            
+            m(x; maxIters = maxIters, stoppingCondition = stoppingCondition, use_neural_initializer = true, reset_states = true)
             m.mo.initerror .= m.mo.u .- m.mo.u0
             backwardSolverStep!(m.psOpt)
 

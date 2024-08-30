@@ -60,7 +60,7 @@ l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
 #l2 = PCDense(n2, n1, relu, 0.1f0, :L2, Float32)
 mo = PCModule(l0, (l1,))
 
-pcn.mo.ps.params.L1 
+mo.ps.params.L1 
 mo.receptiveFieldNorms.L1
 
 
@@ -80,7 +80,7 @@ pcn.mo.ps.params.L1 .= w
 
 # play around with maxIters, stoppingCondition, and dt of the forward solver to see how the network converges
 @time pcn(x; maxIters = 100, stoppingCondition = 0.001f0, use_neural_initializer = false, reset_states = true)
-get_states(pcn)
+get_states(pcn).L1
 
 obs = 2
 f = scatterlines(get_states(pcn).L1[:, obs])
@@ -148,7 +148,7 @@ l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
 mo = PCModule(l0, (l1,))
 
 
-FfSolver = forwardES1(mo, dt = 0.1f0)
+fSolver = forwardES1(mo, dt = 0.1f0)
 bSolver = backwardES1(mo, dt = 0.01f0)
 
 pcn = Pnet(mo, fSolver, bSolver)
@@ -158,29 +158,20 @@ to_gpu!(pcn)
 xc = cu(x)
 
 
-batchSize = 1024 * 1
+batchSize = 1024 *4
 trainingData = DataLoader(xc, batchsize = batchSize, partial = false, shuffle = true)
 
 
+@time trainSteps!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, trainingSteps = 1000, followUpRuns = 50, maxFollowUpIters = 5)
 
-@time trainSteps!(pcn, trainingData; maxIters = 150, stoppingCondition = 0.01f0, trainingSteps = 100, followUpRuns = 10, maxFollowUpIters = 10)
+# look at the convergence of the training algorithm
+scatterlines(get_training_du_logs(pcn))
+scatterlines(get_training_error_logs(pcn))
 
-
-for xd in trainingData
-    println(xd isa CuArray) 
-
-end
-
-pcn.mo.ps.params.L1 
-pcn.mo.inputlayer.data
-pcn.mo.du.L0
 
 
 #back to CPU for analysis
 to_cpu!(pcn)
-scatterlines(get_error_logs(pcn))
-scatterlines(get_du_logs(pcn))
-
 
 # layer 1 parameters. If this looks like a Gaussian basis, then the network has learned the true basis (up to a permutation)!
 heatmap(get_model_parameters(pcn).L1)
@@ -188,61 +179,26 @@ heatmap(get_model_parameters(pcn).L1)
 # layer 1 initializer parameters. This should be highly sparse, incoherent, and correlated with the layer 1 parameters.
 heatmap(get_initializer_parameters(pcn).L1')
 
-scatterlines(get_u0(pcn).L1[:, 1])
-scatterlines(get_states(pcn).L1[:, 1])
 
-scatterlines(y[:, 1])
-scatterlines(x[:, 1])
-
-scatterlines(get_du_logs(pcn))
-scatterlines(get_error_logs(pcn))
-#evaluate the convergence of the training algorithm
-
-scatterlines(get_training_du_logs(pcn))
-scatterlines(get_training_error_logs(pcn))
-
-
+# run the newly trained network
 @time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
 
 
 
 
+# compare u0 to u. If these are similar, the initializer network is well trained and will converge quickly on the forward pass.
+# note that u almost certainly won't look like the true activations y even when the network is well trained - this is unsupervised learning after all.
+scatterlines(get_u0(pcn).L1[:, 1])
+scatterlines(get_states(pcn).L1[:, 1])
 
-bs = 1024 
-data = DataLoader(xc, batchsize = bs, partial = false, shuffle = true)
-data.batchsize
-GC.gc(true)
+# compare the predicted data to the true data. If these are similar, the network is well trained.
+scatterlines(x[:, 1])
+scatterlines(pcn.mo.predictions.L0[:, 1])
 
 
-@time train!(pcn, data; maxSteps = 50, stoppingCondition = 0.01, maxFollowupSteps = 10, epochs = 500, trainstepsPerBatch = 20, decayLrEvery = 20, lrDecayRate = 0.85f0, show_every = 1, normalize_every = 1000)
-
-to_cpu!(pcn)
-heatmap(pcn.pcmodule.layers[1].ps)
-heatmap(pcn.pcmodule.layers[2].ps)
-heatmap(pcn.initializer!.initializers[1].ps)
-to_gpu!(pcn)
-
-@time sol = pcn(first(data), maxSteps = 150, stoppingCondition = 0.045f0, reset_module = true);
-pcn.initializer!.isActive = true
-pcn.pcmodule.u0.L0
-pcn.initializer!(pcn.pcmodule.u0, first(data))
-pcn.initializer!.isActive = false
-to_cpu!(pcn)
-sol = to_cpu!(sol)
-
-obs = 888
-f = scatterlines(sol.L2[:, obs]) #plot the output of the first layer
-scatterlines!(pcn.pcmodule.u0.L2[:, obs])
-f
-
-sum(abs.(sol.L1))
-sum(abs.(pcn.pcmodule.u0.L1 .- sol.L1))
-
-scatterlines(pcn.fixedPointSolver.errorLogs)
-scatterlines(pcn.fixedPointSolver.duLogs)
-length(fps.duLogs)
-minimum(fps.duLogs)
-
+scatterlines(get_du_logs(pcn))
+scatterlines(get_error_logs(pcn))
+#evaluate the convergence of the training algorithm
 
 
 

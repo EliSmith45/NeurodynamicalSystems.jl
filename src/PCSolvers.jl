@@ -93,8 +93,8 @@ function backwardSolverStep!(s::ES1)
     s.pcmodule.ps .+= s.dt .* s.pcmodule.psgrads
     s.pcmodule.ps.params .= relu.(s.pcmodule.ps.params)
     
-    s.pcmodule.errors .= abs.(s.pcmodule.errors)
-    append!(s.errorLogs, sum(s.pcmodule.errors))
+    #s.pcmodule.errors .= abs.(s.pcmodule.errors)
+    append!(s.errorLogs, sum(abs.(s.pcmodule.errors)))
     
     
     s.c1 .= abs.(s.pcmodule.psgrads)
