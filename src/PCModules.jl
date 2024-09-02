@@ -107,54 +107,55 @@ function PCLayers.allocate_params(hiddenlayers::Tuple)
     return ps, psgrads, receptiveFieldNorms
 end
 
-function PCLayers.get_gradient_activations!(m::PCModule, x)
-    
-    m.inputlayer.data = x
-    get_gradient_activations!(values(NamedTuple(m.du))[1], values(NamedTuple(m.u))[1], m.inputlayer, values(NamedTuple(m.errors))[1])
-
-    for k in eachindex(m.layers)
-        make_predictions!(values(NamedTuple(m.predictions))[k], m.layers[k], values(NamedTuple(m.ps.params))[k], values(NamedTuple(m.u))[k + 1])
-    end
-    values(NamedTuple(m.predictions))[end] .= values(NamedTuple(m.u))[end]
-    m.errors .= m.u .- m.predictions
-
-    for k in eachindex(m.layers)
-        get_gradient_activations!(values(NamedTuple(m.du))[k + 1], m.layers[k], values(NamedTuple(m.errors))[k], values(NamedTuple(m.errors))[k + 1], values(NamedTuple(m.ps.params))[k])
-    end
-
-end
-
-
-function PCLayers.get_gradient_activations!(m::PCModule, x, y)
-    
-    # set input layer to x
-    m.inputlayer.data = x
-    get_gradient_activations!(values(NamedTuple(m.du))[1], values(NamedTuple(m.u))[1], m.inputlayer, values(NamedTuple(m.errors))[1])
+function PCLayers.make_predictions!(m::PCModule, params, u)
 
     # make predictions for each layer
     for k in eachindex(m.layers)
-        make_predictions!(values(NamedTuple(m.predictions))[k], m.layers[k], values(NamedTuple(m.ps.params))[k], values(NamedTuple(m.u))[k + 1])
+        make_predictions!(values(NamedTuple(m.predictions))[k], m.layers[k], values(NamedTuple(params))[k], values(NamedTuple(u))[k + 1])
     end
 
     # set the last layer's predicted value to its state so its error will be zero (as nothing predicts the top layer)
-    values(NamedTuple(m.predictions))[end] .= values(NamedTuple(m.u))[end]
-    m.errors .= m.u .- m.predictions
-
-    # get the gradient of the errors with respect to the activations for each layer except the last
-    for k in 1:(length(m.layers) - 1)
-        get_gradient_activations!(values(NamedTuple(m.du))[k + 1], m.layers[k], values(NamedTuple(m.errors))[k], values(NamedTuple(m.errors))[k + 1], values(NamedTuple(m.ps.params))[k])
-    end
-
-    # set the last layer's state to the labels y and set its gradient to zero (as this layer is pinned to the label values)
-    m.u[m.layers[end].name] .= y
-    m.du[m.layers[end].name] .= 0
+    values(NamedTuple(m.predictions))[end] .= values(NamedTuple(u))[end]
+    m.errors .= u .- m.predictions
 
 end
 
-function PCLayers.get_gradient_parameters!(m::PCModule)
+function PCLayers.get_gradient_activations!(du, u, m::PCModule, x)
+    
+    # set input layer to x
+    m.inputlayer.data = x
+    get_gradient_activations!(values(NamedTuple(du))[1], values(NamedTuple(u))[1], m.inputlayer, values(NamedTuple(m.errors))[1])
+
+    # get the gradient of the sum of squared errors with respect to the activations for each layer except the last
     for k in eachindex(m.layers)
-        get_gradient_parameters!(values(NamedTuple(m.psgrads.params))[k], m.layers[k], values(NamedTuple(m.errors))[k], values(NamedTuple(m.u))[k + 1])
-        get_gradient_init_parameters!(values(NamedTuple(m.psgrads.initps))[k], m.layers[k], values(NamedTuple(m.initerror))[k + 1], values(NamedTuple(m.u))[k])
+        get_gradient_activations!(values(NamedTuple(du))[k + 1], m.layers[k], values(NamedTuple(m.errors))[k], values(NamedTuple(m.errors))[k + 1], values(NamedTuple(m.ps.params))[k])
+    end
+
+end
+
+
+function PCLayers.get_gradient_activations!(du, u, m::PCModule, x, y)
+    
+    # set input layer to x
+    m.inputlayer.data = x
+    get_gradient_activations!(values(NamedTuple(du))[1], values(NamedTuple(u))[1], m.inputlayer, values(NamedTuple(m.errors))[1])
+
+    
+    # get the gradient of the sum of squared errors with respect to the activations for each layer except the last
+    for k in 1:(length(m.layers) - 1)
+        get_gradient_activations!(values(NamedTuple(du))[k + 1], m.layers[k], values(NamedTuple(m.errors))[k], values(NamedTuple(m.errors))[k + 1], values(NamedTuple(m.ps.params))[k])
+    end
+
+    # set the last layer's state to the labels y and set its gradient to zero (as this layer is pinned to the label values)
+    u[m.layers[end].name] .= y
+    du[m.layers[end].name] .= 0
+
+end
+
+function PCLayers.get_gradient_parameters!(psgrads, m::PCModule)
+    for k in eachindex(m.layers)
+        get_gradient_parameters!(values(NamedTuple(psgrads.params))[k], m.layers[k], values(NamedTuple(m.errors))[k], values(NamedTuple(m.u))[k + 1])
+        get_gradient_init_parameters!(values(NamedTuple(psgrads.initps))[k], m.layers[k], values(NamedTuple(m.initerror))[k + 1], values(NamedTuple(m.u))[k])
     end
 end
 
@@ -167,13 +168,29 @@ function normalize_receptive_fields!(m::PCModule)
 end
 
 
-function PCLayers.get_u0!(m::PCModule, x)
+function PCLayers.get_u0!(u0, m::PCModule, initps, x)
+
     m.inputlayer.data = x
     values(NamedTuple(m.u0))[1] .= x
 
     for k in eachindex(m.layers)
-        get_u0!(values(NamedTuple(m.u0))[k + 1], m.layers[k], values(NamedTuple(m.ps.initps))[k], values(NamedTuple(m.u0))[k])
+        get_u0!(values(NamedTuple(u0))[k + 1], m.layers[k], values(NamedTuple(initps))[k], values(NamedTuple(u0))[k])
     end
+
+end
+
+function PCLayers.get_u0!(u0, m::PCModule, initps, x, y)
+
+    m.inputlayer.data = x
+    values(NamedTuple(m.u0))[1] .= x
+
+    for k in eachindex(m.layers)
+        get_u0!(values(NamedTuple(u0))[k + 1], m.layers[k], values(NamedTuple(initps))[k], values(NamedTuple(u0))[k])
+    end
+
+    # set the last layer's state to the labels y (as this layer is pinned to the label values).
+    # we don't set u0 to y because we want to train the initializer to predict the labels from the input.
+    u[m.layers[end].name] .= y
 
 end
 

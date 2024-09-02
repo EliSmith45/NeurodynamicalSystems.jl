@@ -6,27 +6,9 @@ using StatsBase, LinearAlgebra, NNlib, ComponentArrays, OrdinaryDiffEq, CUDA, NN
 
 ########## Internal Dependencies ##########
 include("./PCNetworks.jl")
-@reexport using .PCNetworks
-
-#include("./PCNetworks.jl")
 include("./Utils.jl")
-#include("./PCDense.jl")
-#@reexport using .PCDenseLayers2
-
-#using .PCModules
-#@reexport using .PCNetworks
-import .Utils: gaussian_basis, sample_basis
-
-########## Exports ##########
-#export PCDense, PCConv, PCStaticInput, PCDynamicInput, PCModule, ModuleInitializer, PCNet
-#export ODEIntegrator
-#export to_gpu!, to_cpu!
-export gaussian_basis, sample_basis, pick_max!
-
-
-
-
-
+@reexport using .PCNetworks
+@reexport using .Utils
 
 
 

@@ -39,110 +39,57 @@ function classification_accuracy(pcn, data)
     dot(pick_max!(sol.L3), data.data.label) / size(data.data.label)[end]
 end
 
-
-trainSize = 1000
-testSize = 100
+trainSize = 60000
+testSize = 1024
 trainFeatures, trainLabels, testFeatures, testLabels = read_mnist(trainSize, testSize)
 
 ##### Initialize the network 
+nObs = size(trainFeatures)[2]
 
-#layer dimensions, must be a tuple
-n0 = (size(trainFeatures, 1),)
+# layer dimensions, must be a tuple
+n0 = size(trainFeatures)# size of one sample
+n1 = (64, nObs)
+n2 = (10, nObs)
 
-n1 = (64,)
-n2 = (64,)
-n3 = (10,)
-
-#initialize layers
-
-
+# create layers
 l0 = PCStaticInput(n0, :L0)
-l1 = PCDense2(n1, n0, relu, 0.1f0, false, :L1, Float32)
-l2 = PCDense2(n2, n1, relu, 0.1f0, false, :L2, Float32)
+l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
+l2 = PCDense(n2, n1, relu, 0.1f0, :L2, Float32)
 mo = PCModule(l0, (l1, l2))
-change_nObs!(mo, trainSize)
 
-fSolver = forwardES1(mo, dt = 0.000001f0, maxSteps = 25)
-bSolver = backwardES1(mo, dt = 0.000001f0, maxSteps = 25)
 
+fSolver = ForwardEulerSolver(mo, dt = 0.02f0)
+bSolver = BackwardEulerSolver(mo, dt = 0.01f0)
 pcn = Pnet(mo, fSolver, bSolver)
-x = ones(Float32, n0[1], 5000)CommonFunctions.
-
-@time backwardSolverStep!(pcn.psOpt)
-@time trainSteps!(pcn, x; steps = 1, followUpRuns = 1, maxFollowUpSteps = 5)
 
 to_gpu!(pcn)
-xc = cu(x)
-
-@time pcn(xc)
-
-@time trainSteps!(pcn, xc; steps = 10, followUpRuns = 10, maxFollowUpSteps = 5)
-
-to_cpu!(pcn)
-
-heatmap(mo.ps.params.L2)
-
-mo.u
-
-
-x
-
-asdf
-####
-
-
-x
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-l0 = PCStaticInput((n0, trainSize), :L0)
-l1, init1 = PCDense((n0, trainSize), (n1, trainSize), :L1; prop_zero = 0.25, σ = relu, tc = 1.0f0, α = 0.05f0, threshold = 0.1f0)
-l2, init2 = PCDense((n1, trainSize), (n2, trainSize), :L2; prop_zero = 0.25, σ = relu, tc = 1.0f0, α = 0.05f0, threshold = 0.1f0)
-l3, init3 = PCDense((n2, trainSize), (n3, trainSize), :L3; prop_zero = 0.0, σ = relu, tc = 1.0f0, α = 0.05f0, threshold = 0.1f0)
-
-#initialize module and network
-mo, initializer = PCModule(l0, (l1, l2, l3), (init1, init2, init3))
-fps = ODEIntegrator(mo; tspan = (0.0f0, 10.0f0), solver = BS3(), abstol = .01f0, reltol = .01f0, save_everystep = false, save_start = false, dt = 0.05f0, adaptive = true, dtmax = 1.0f0, dtmin = 0.0001f0)
-pcn = PCNet(mo, initializer, fps)
-to_gpu!(pcn)
-reset!(pcn)
-
 trainFeaturesc = cu(trainFeatures)
 trainLabelsc = cu(trainLabels)
 testFeaturesc = cu(testFeatures)
 testLabelsc = cu(testLabels)
 
-bs = 1024 
+bs = 1024 * 4
 trainingData = DataLoader((data = trainFeaturesc, label = trainLabelsc), batchsize = bs, partial = false, shuffle = true)
 testingData = DataLoader((data = testFeaturesc, label = testLabelsc), batchsize = bs, partial = false, shuffle = true)
 
 GC.gc(true)
 
 
-@time train!(pcn, trainingData; maxSteps = 50, stoppingCondition = 0.01, maxFollowupSteps = 10, epochs = 1000, trainstepsPerBatch = 5, decayLrEvery = 50, lrDecayRate = 0.9f0, show_every = 1, normalize_every = 1, trainingEvalCallback = (1, classification_accuracy), testingEvalCallback = (1, classification_accuracy), testData = testingData)
+# train the network
+@time trainSteps!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, trainingSteps = 500, followUpRuns = 10, maxFollowUpIters = 5)
+
+# look at the convergence of the training algorithm
+scatterlines(get_training_du_logs(pcn))
+scatterlines(get_training_error_logs(pcn))
 
 
+# run the newly trained network
+@time pcn(trainFeaturesc[:, 1:1024]; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
+
+scatterlines(get_du_logs(pcn))
+scatterlines(get_error_logs(pcn))
+pick_max!(values(NamedTuple(get_states(pcn)))[end])
+dot(values(NamedTuple(get_states(pcn)))[end], trainLabelsc[:, 1:1024])
 
 @time sol = pcn(trainFeaturesc[:, 1:1024], maxSteps = 50, stoppingCondition = 0.01f0, reset_module = true);
 scatterlines(pcn.fixedPointSolver.errorLogs)

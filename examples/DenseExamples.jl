@@ -27,12 +27,12 @@ using Flux: Flux, DataLoader
 
 n = 64; #number of bases
 m = 64; 
-nObs = 1024 * 8
+nObs = 1024 * 4
 
 sigma = Float32(1/n); #width of each Gaussian
 w = gaussian_basis(n, m; sigma = sigma) #make gaussian basis
 
-x, y = sample_basis(w; nObs = nObs, nActive = 3, maxCoherence = .99) #sample from the basis
+x, y = sample_basis(w; nObs = nObs, nActive = 6, maxCoherence = .25) #sample from the basis
 y
 
 
@@ -57,32 +57,28 @@ n2 = (m, 1)
 
 l0 = PCStaticInput(n0, :L0)
 l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
-#l2 = PCDense(n2, n1, relu, 0.1f0, :L2, Float32)
 mo = PCModule(l0, (l1,))
 
-mo.ps.params.L1 
-mo.receptiveFieldNorms.L1
+# Assign the true basis to layer L1's model parameters to analyze the convergence of the forward pass with a fully-trained network
+mo.ps.params.L1 .= w
 
-
-fSolver = forwardES1(mo, dt = 0.15f0)
-bSolver = backwardES1(mo, dt = 0.01f0)
+# Create the solvers
+fSolver = ForwardEulerSolver(mo, dt = 0.15f0)
+bSolver = BackwardEulerSolver(mo, dt = 0.01f0)
 
 pcn = Pnet(mo, fSolver, bSolver)
 
-#assign the true basis to layer L1's model parameters to analyze the convergence of the forward pass with a fully-trained network
-pcn.mo.ps.params.L1 .= w
-#pcn.mo.ps.params.L2 .= 0
-#pcn.mo.ps.params.L2[diagind(pcn.mo.ps.params.L2)] .= 1
 
 
 ########## Running the network with the known optimal weights, unsupervised ##########
 
 
 # play around with maxIters, stoppingCondition, and dt of the forward solver to see how the network converges
-@time pcn(x; maxIters = 100, stoppingCondition = 0.001f0, use_neural_initializer = false, reset_states = true)
+change_step_size_forward!(pcn, (dt = 0.1f0,))
+@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
 get_states(pcn).L1
 
-obs = 2
+obs = 2 # which observation to look at
 f = scatterlines(get_states(pcn).L1[:, obs])
 scatterlines!(y[:, obs])
 f
@@ -92,7 +88,6 @@ f
 
 scatterlines(get_du_logs(pcn))
 scatterlines(get_error_logs(pcn))
-
 
 
 ########## Running the network with the known optimal weights, supervised ##########
@@ -115,7 +110,7 @@ to_gpu!(pcn); #move to GPU
 xc = cu(x) #move data to GPU 
 
 
-@time pcn(xc; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
+@time pcn(xc; maxIters = 50, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
 
 to_cpu!(pcn)
 get_states(pcn)
@@ -133,11 +128,23 @@ heatmap(get_model_parameters(pcn).L1)
 
 ########## Training with unsupervised learning ##########
 
+# make a much larger data set
+n = 64; #number of bases
+m = 64; 
+nObs = 1024 * 24
+
+sigma = Float32(1/n); #width of each Gaussian
+w = gaussian_basis(n, m; sigma = sigma) #make gaussian basis
+
+x, y = sample_basis(w; nObs = nObs, nActive = 3, maxCoherence = .7) #sample from the basis
+y
+
+
+
 #layer dimensions, must be a tuple
 n0 = (n, 1)
-
 n1 = (m, 1)
-n2 = (m, 1)
+#n2 = (m, 1)
 
 #initialize layers
 
@@ -148,8 +155,8 @@ l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
 mo = PCModule(l0, (l1,))
 
 
-fSolver = forwardES1(mo, dt = 0.1f0)
-bSolver = backwardES1(mo, dt = 0.01f0)
+fSolver = ForwardEulerSolver(mo, dt = 0.1f0)
+bSolver = BackwardEulerSolver(mo, dt = 0.5f0)
 
 pcn = Pnet(mo, fSolver, bSolver)
 
@@ -162,12 +169,11 @@ batchSize = 1024 *4
 trainingData = DataLoader(xc, batchsize = batchSize, partial = false, shuffle = true)
 
 
-@time trainSteps!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, trainingSteps = 1000, followUpRuns = 50, maxFollowUpIters = 5)
+@time trainSteps!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, trainingSteps = 500, followUpRuns = 50, maxFollowUpIters = 5)
 
 # look at the convergence of the training algorithm
 scatterlines(get_training_du_logs(pcn))
 scatterlines(get_training_error_logs(pcn))
-
 
 
 #back to CPU for analysis
@@ -188,8 +194,10 @@ heatmap(get_initializer_parameters(pcn).L1')
 
 # compare u0 to u. If these are similar, the initializer network is well trained and will converge quickly on the forward pass.
 # note that u almost certainly won't look like the true activations y even when the network is well trained - this is unsupervised learning after all.
-scatterlines(get_u0(pcn).L1[:, 1])
-scatterlines(get_states(pcn).L1[:, 1])
+
+obs = 3
+scatterlines(get_u0(pcn).L1[:, obs])
+scatterlines(get_states(pcn).L1[:, obs])
 
 # compare the predicted data to the true data. If these are similar, the network is well trained.
 scatterlines(x[:, 1])
@@ -201,4 +209,105 @@ scatterlines(get_error_logs(pcn))
 #evaluate the convergence of the training algorithm
 
 
+# run the newly trained network
+@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = true, reset_states = true)
 
+
+
+
+
+########## Training with supervised learning ##########
+
+# make a much larger data set
+n = 64; #number of bases
+m = 64; 
+nObs = 1024 * 24
+
+sigma = Float32(1/n); #width of each Gaussian
+w = gaussian_basis(n, m; sigma = sigma) #make gaussian basis
+
+x, y = sample_basis(w; nObs = nObs, nActive = 3, maxCoherence = .7) #sample from the basis
+y
+
+
+
+# layer dimensions, must be a tuple
+n0 = (n, 1)
+n1 = (m, 1)
+#n2 = (m, 1)
+
+# create layers
+l0 = PCStaticInput(n0, :L0)
+l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
+#l2 = PCDense(n2, n1, relu, 0.1f0, :L2, Float32)
+mo = PCModule(l0, (l1,))
+
+
+fSolver = ForwardEulerSolver(mo, dt = 0.1f0)
+bSolver = BackwardEulerSolver(mo, dt = 0.5f0)
+
+pcn = Pnet(mo, fSolver, bSolver)
+
+
+to_gpu!(pcn)
+xc = cu(x)
+yc = cu(y)
+
+
+batchSize = 1024 *4
+trainingData = DataLoader((data = xc, label = yc), batchsize = batchSize, partial = false, shuffle = true)
+
+
+@time trainSteps!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, trainingSteps = 500, followUpRuns = 50, maxFollowUpIters = 5)
+
+# look at the convergence of the training algorithm
+scatterlines(get_training_du_logs(pcn))
+scatterlines(get_training_error_logs(pcn))
+
+
+#back to CPU for analysis
+to_cpu!(pcn)
+
+# layer 1 parameters. This should be almost identical to w, the true basis used to generate the data
+heatmap(get_model_parameters(pcn).L1)
+
+# layer 1 initializer parameters. What a beautiful matrix!
+heatmap(get_initializer_parameters(pcn).L1')
+
+
+# run the newly trained network
+@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
+
+
+
+# compare u0 to u. If these are similar, the initializer network is well trained and will converge quickly on the forward pass.
+scatterlines(get_u0(pcn).L1[:, 1])
+scatterlines(get_states(pcn).L1[:, 1])
+
+scatterlines(y[:, 1]) # Wow! The network has learned the true activations y!
+
+# compare the predicted data to the true data. If these are similar, the network is well trained.
+scatterlines(x[:, 1])
+scatterlines(pcn.mo.predictions.L0[:, 1])
+
+
+#evaluate the convergence of the training algorithm
+
+duLogsWithoutInitializer = get_du_logs(pcn)
+errorLogsWithoutInitializer = get_error_logs(pcn)
+itersWithoutInitializer = get_iters(pcn)
+
+
+
+# run the network again, this time with the initializer
+@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = true, reset_states = true)
+
+duLogsWithInitializer = get_du_logs(pcn)
+errorLogsWithInitializer = get_error_logs(pcn)
+itersWithInitializer = get_iters(pcn)
+
+# the network converges much faster with the initializer!
+scatterlines(duLogsWithoutInitializer)
+scatterlines(duLogsWithInitializer)
+
+scatterlines(get_states(pcn).L1[:, 1])

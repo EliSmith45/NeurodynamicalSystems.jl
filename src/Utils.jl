@@ -114,6 +114,7 @@ function pick_max!(x; dims = 1)
     ind = argmax(x, dims = dims)
     x .= 0.0f0
     x[ind] .= 1.0f0
+    return
 end
       
 end
