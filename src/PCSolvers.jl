@@ -12,15 +12,22 @@ include("./PCModules.jl")
 
 export EulerSolver, ForwardEulerSolver, BackwardEulerSolver
 export HeunSolver, ForwardHeunSolver, BackwardHeunSolver
-export forwardSolverStep!, backwardSolverStep!, forwardSolve!, change_step_size!
+export EulerAdaptiveSolver, forwardEulerAdaptiveSolver, backwardEulerAdaptiveSolver
+export Adam, forwardAdamSolver, backwardAdamSolver
+export Eve, forwardEveSolver, backwardEveSolver
+export forwardSolverStep!, backwardSolverStep!, forwardSolve!, forward_solve_logged!, change_step_size!
 
 abstract type AbstractSolver end # abstract type for the solvers 
 
 ##### Generic functions #####
 
 # iterates through the steps. This is the unsupervised forward pass of the PC network
-function forwardSolve!(s::AbstractSolver, x; maxSteps = 50, stoppingCondition = 0.01f0)
+function forwardSolve!(s::AbstractSolver, x; maxSteps = 50, stoppingCondition = 0.01f0, log_trajectories = false)
 
+    if log_trajectories
+        trajectories = [zeros(eltype(s.pcmodule.u0), s.pcmodule.layers[i].statesize[1:end - 1], maxSteps) for i in 1:length(s.pcmodule.layers)]
+
+    end
     if length(s.errorLogs) != maxSteps
         s.errorLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
         s.duLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
@@ -59,6 +66,54 @@ function forwardSolve!(s::AbstractSolver, x, y; maxSteps = 50, stoppingCondition
         
     end
 end
+
+
+# iterates through the steps. This is the unsupervised forward pass of the PC network
+function forward_solve_logged!(s::AbstractSolver, x; maxSteps = 50, stoppingCondition = 0.01f0)
+
+    trajectories = [zeros(eltype(s.pcmodule.u0), s.pcmodule.layers[i].statesize[1:end - 1], maxSteps) for i in 1:length(s.pcmodule.layers)]
+    
+    if length(s.errorLogs) != maxSteps
+        s.errorLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
+        s.duLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
+    end
+
+    s.iter_reached = maxSteps #will be updated if the stopping condition is reached before maxSteps
+
+    for i in 1:maxSteps
+        forwardSolverStep!(s, x, i)
+
+        if s.duLogs[i] < stoppingCondition 
+            s.iter_reached = i
+            break
+        end
+        
+    end
+end
+
+# iterates through the steps. This is the supervised forward pass of the PC network
+function forward_solve_logged!(s::AbstractSolver, x, y; maxSteps = 50, stoppingCondition = 0.01f0)
+
+    trajectories = [zeros(eltype(s.pcmodule.u0), s.pcmodule.layers[i].statesize[1:end - 1], maxSteps) for i in 1:length(s.pcmodule.layers)]
+    
+    if length(s.errorLogs) != maxSteps
+        s.errorLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
+        s.duLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
+    end
+
+    s.iter_reached = maxSteps #will be updated if the stopping condition is reached before maxSteps
+
+    for i in 1:maxSteps
+        forwardSolverStep!(s, x, y, i)
+
+        if s.duLogs[i] < stoppingCondition 
+            s.iter_reached = i
+            break
+        end
+        
+    end
+end
+
 
 # calculates and logs the values used to analyze the convergence of the forward pass
 function forward_convergence_check(s::AbstractSolver, i)
@@ -101,6 +156,17 @@ mutable struct EulerSolver <: AbstractSolver
     mode
 end
 
+"""
+    ForwardEulerSolver(m::PCModule; dt = 0.001f0)
+
+Creates a forward pass solver that uses Euler's method, i.e., traditional gradient descent, to find the optimal activations given the optimal parameters and input.
+
+# Arguments
+- `m::PCModule`: The PCmodule.
+- `dt::Float32`: The time step size (default: 0.001).
+
+# Examples
+"""
 function ForwardEulerSolver(m::PCModule; dt = 0.001f0)
 
     c1 = deepcopy(m.u0)
@@ -112,6 +178,19 @@ function ForwardEulerSolver(m::PCModule; dt = 0.001f0)
     EulerSolver(m, dt, c1, c2, errorLogs, duLogs, 1, "forward")
 end
 
+
+"""
+    BackwardEulerSolver(m::PCModule; dt = 0.001f0)
+
+Creates a backward pass solver that uses Euler's method, i.e., traditional gradient descent, to find the optimal parameters given the optimal activations.
+
+
+# Arguments
+- `m::PCModule`: The PCModule representing the neurodynamical system.
+- `dt::Float32`: The time step size for the solver. Default is 0.001.
+
+# Examples
+"""
 function BackwardEulerSolver(m::PCModule; dt = 0.001f0)
 
     c1 = deepcopy(m.ps)
@@ -225,6 +304,17 @@ mutable struct HeunSolver <: AbstractSolver
     mode
 end
 
+"""
+    HeunSolver(m::PCModule; dt = 0.001f0)
+
+Creates a solver that uses Heun's method, i.e., a second-order Runge-Kutta method, to find the optimal activations given the optimal parameters and input.
+
+# Arguments
+- `m::PCModule`: The PCModule representing the neurodynamical system.
+- `dt::Float32`: The time step size for the solver. Default is 0.001.
+
+# Examples
+"""
 function ForwardHeunSolver(m::PCModule; dt = 0.001f0)
 
     k1 = deepcopy(m.u0)
@@ -238,6 +328,18 @@ function ForwardHeunSolver(m::PCModule; dt = 0.001f0)
 
     HeunSolver(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "forward")
 end
+
+"""
+    BackwardHeunSolver(m::PCModule; dt = 0.001f0)
+
+Creates a backward pass solver that uses Heun's method, i.e., a second-order Runge-Kutta method, to find the optimal parameters given the optimal activations.
+
+# Arguments
+- `m::PCModule`: The PCModule representing the neurodynamical system.
+- `dt::Float32`: The time step size for the solver. Default is 0.001.
+
+# Examples
+"""
 
 function BackwardHeunSolver(m::PCModule; dt = 0.001f0)
 
@@ -367,6 +469,158 @@ function PCModules.to_cpu!(s::HeunSolver)
     
 end
 
+
+##### Euler's method with Runge-Kutta-Feldberg style adaptive stepping #####
+
+
+mutable struct EulerAdaptiveSolver <: AbstractSolver
+    pcmodule
+    dt
+
+    k1 # value of u at the start of the step
+    dk1 # gradient of u at the start of the step
+    
+    c1
+    c2
+    errorLogs
+    duLogs
+
+    iter_reached
+    mode
+end
+
+function forwardEulerAdaptiveSolver(m::PCModule; dt = 0.001f0)
+
+    k1 = deepcopy(m.u0)
+    dk1 = deepcopy(m.u0)
+
+    c1 = deepcopy(m.u0)
+    c2 = deepcopy(m.u0)
+
+    errorLogs = zeros(eltype(m.u0), 1)
+    duLogs = zeros(eltype(m.u0), 1)
+
+    EulerAdaptiveSolver(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "forward")
+end
+
+function backwardEulerAdaptiveSolver(m::PCModule; dt = 0.001f0)
+
+    k1 = deepcopy(m.ps)
+    dk1 = deepcopy(m.ps)
+
+    c1 = deepcopy(m.ps)
+    c2 = deepcopy(m.ps)
+
+    errorLogs = eltype(m.ps)[]
+    duLogs = eltype(m.ps)[]
+
+    EulerAdaptiveSolver(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "backward")
+
+end
+
+##### Adam optimiser #####
+
+
+mutable struct Adam <: AbstractSolver
+    pcmodule
+    dt
+
+    k1 # value of u at the start of the step
+    dk1 # gradient of u at the start of the step
+    
+    c1
+    c2
+    errorLogs
+    duLogs
+
+    iter_reached
+    mode
+end
+
+function forwardAdamSolver(m::PCModule; dt = 0.001f0)
+
+    k1 = deepcopy(m.u0)
+    dk1 = deepcopy(m.u0)
+
+    c1 = deepcopy(m.u0)
+    c2 = deepcopy(m.u0)
+
+    errorLogs = zeros(eltype(m.u0), 1)
+    duLogs = zeros(eltype(m.u0), 1)
+
+    Adam(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "forward")
+end
+
+function backwardAdamSolver(m::PCModule; dt = 0.001f0)
+
+    k1 = deepcopy(m.ps)
+    dk1 = deepcopy(m.ps)
+
+    c1 = deepcopy(m.ps)
+    c2 = deepcopy(m.ps)
+
+    errorLogs = eltype(m.ps)[]
+    duLogs = eltype(m.ps)[]
+
+    Adam(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "backward")
+
+end
+
+##### Eve optimiser #####
+
+# Eve is a novel optimiser created by yours truly. Like RKF solvers, it adaptively determines the 
+# step size using an estimate of the Taylor Series truncation error estimated by comparing the results 
+# of an nth order and n+1 order Runge-Kutta solver. However, like Adam, Eve calculates step sizes 
+# pointwise, rather than using a single step size across all states. This modifies the trajectory of 
+# the state variables and therefore is not suitable for solving general ODEs. However, it is suitable  
+# for convex optimization, as it preserves the fixed point. It performs exceptionally well for poorly 
+# conditioned problems by rescaling each variable independently, which effectively makes the problem 
+# well conditioned without explicitly preconditioning. 
+
+mutable struct Eve <: AbstractSolver
+    pcmodule
+    dt
+
+    k1 # value of u at the start of the step
+    dk1 # gradient of u at the start of the step
+    
+    c1
+    c2
+    errorLogs
+    duLogs
+
+    iter_reached
+    mode
+end
+
+function forwardEveSolver(m::PCModule; dt = 0.001f0)
+
+    k1 = deepcopy(m.u0)
+    dk1 = deepcopy(m.u0)
+
+    c1 = deepcopy(m.u0)
+    c2 = deepcopy(m.u0)
+
+    errorLogs = zeros(eltype(m.u0), 1)
+    duLogs = zeros(eltype(m.u0), 1)
+
+    Eve(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "forward")
+end
+
+function backwardEveSolver(m::PCModule; dt = 0.001f0)
+
+    k1 = deepcopy(m.ps)
+    dk1 = deepcopy(m.ps)
+
+    c1 = deepcopy(m.ps)
+    c2 = deepcopy(m.ps)
+
+    errorLogs = eltype(m.ps)[]
+    duLogs = eltype(m.ps)[]
+
+    Eve(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "backward")
+
+end
 
 
 

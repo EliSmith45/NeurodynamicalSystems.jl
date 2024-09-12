@@ -8,7 +8,7 @@ Miscellaneous utility functions
 using NNlib, LinearAlgebra, CUDA
 
 ########## Exports ##########
-export nonneg_normalized!, gaussian_basis, sample_basis, pick_max!
+export nonneg_normalized!, gaussian_basis, sample_basis, pick_max!, classification_accuracy
 
 
 # Force all elements of an array to be nonnegative and normalize features by their L2 norm. 
@@ -111,11 +111,17 @@ end
 
 
 function pick_max!(x; dims = 1)
-    ind = argmax(x, dims = dims)
+    ind = argmax(x; dims = dims)
     x .= 0.0f0
     x[ind] .= 1.0f0
     return
 end
       
+function classification_accuracy(states, labels)
+    pick_max!(values(NamedTuple(states))[end])
+    dot(values(NamedTuple(states))[end], labels) / size(labels)[end]
+
+end
+
 end
 

@@ -29,7 +29,7 @@ n1 = (m, 1)
 
 # Create the layers
 l0 = PCStaticInput(n0, :L0)
-l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
+l1 = PCDense(n1, n0, :L1; σ = relu, shrinkage = 0.1f0);
 mo = PCModule(l0, (l1,))
 
 #assign the true basis to layer L1's model parameters to analyze the convergence of the forward pass with a fully-trained network
@@ -39,7 +39,7 @@ mo.ps.params.L1 .= w
 fSolver = ForwardEulerSolver(mo, dt = 0.5f0)
 bSolver = BackwardEulerSolver(mo, dt = 0.01f0)
 
-pcnEuler = Pnet(mo, fSolver, bSolver)
+pcnEuler = PCNetwork(mo, fSolver, bSolver)
 
 # Run the network
 @time pcnEuler(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
@@ -52,7 +52,7 @@ scatterlines!(y[:, obs])
 f
 
 # Now let's look at the predicted inputs vs. the true inputs. Again, we want these to be similar
-f = scatterlines(pcnEuler.mo.predictions.L0[:, obs])
+f = scatterlines(get_predictions(pcnEuler).L0[:, obs])
 scatterlines!(x[:, obs])
 f
 
@@ -84,7 +84,7 @@ scatterlines!(y[:, obs])
 f
 
 # Now let's look at the predicted inputs vs. the true inputs. Again, we want these to be similar
-f = scatterlines(pcnEuler.mo.predictions.L0[:, obs])
+f = scatterlines(get_predictions(pcnEuler).L0[:, obs])
 scatterlines!(x[:, obs])
 f
 
@@ -108,7 +108,7 @@ scatterlines!(y[:, obs])
 f
 
 # Now let's look at the predicted inputs vs. the true inputs. Again, we want these to be similar
-f = scatterlines(pcnEuler.mo.predictions.L0[:, obs])
+f = scatterlines(get_predictions(pcnEuler).L0[:, obs])
 scatterlines!(x[:, obs])
 f
 
@@ -128,7 +128,7 @@ n1 = (m, 1)
 
 # Create the layers
 l0 = PCStaticInput(n0, :L0)
-l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
+l1 = PCDense(n1, n0, :L1; σ = relu, shrinkage = 0.1f0);
 mo = PCModule(l0, (l1,))
 
 #assign the true basis to layer L1's model parameters to analyze the convergence of the forward pass with a fully-trained network
@@ -137,7 +137,7 @@ mo.ps.params.L1 .= w
 # Let's start with Euler's method for inference (forward pass) and learning (backward pass)
 fSolver = ForwardHeunSolver(mo, dt = 0.45)
 bSolver = BackwardEulerSolver(mo, dt = 0.01f0)
-pcnHeun = Pnet(mo, fSolver, bSolver)
+pcnHeun = PCNetwork(mo, fSolver, bSolver)
 change_step_size_forward!(pcnEuler, (dt = 0.45,))
 
 # Run the networks with identical stopping conditions
@@ -153,11 +153,12 @@ f
 
 
 
+
 scatterlines!(y[:, obs])
 f
 
 # Now let's look at the predicted inputs vs. the true inputs. Again, we want these to be similar
-f = scatterlines(pcnHeun.mo.predictions.L0[:, obs])
+f = scatterlines(get_predictions(pcnHeun).L0[:, obs])
 scatterlines!(x[:, obs])
 f
 

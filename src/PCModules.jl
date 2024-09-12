@@ -47,11 +47,21 @@ end
 
 
 
+
 """
     PCModule(inputlayer, hiddenlayers)
 
-Constructor for predictive coding modules 
+Constructs a predictive coding module with the given input layer and a tuple of hidden layers. A PCModule is a set of layers where each layer uses a dynamical system to encode the layer below it. It is analogous to a chain in Flux.jl. The PCModule object stores the parameters, states, preallocated gradient arrays, and all other preallocated intermediary arrays.
+
+# Arguments
+- `inputlayer`: The input layer of the module.
+- `hiddenlayers`: The hidden layers of the module.
+
+# Returns 
+- `PCModule`: The PCModule object.
+# Examples
 """
+
 function PCModule(inputlayer, hiddenlayers)
 
     nObs = size(inputlayer.data, ndims(inputlayer.data))
@@ -68,7 +78,7 @@ function PCModule(inputlayer, hiddenlayers)
 end
 
 function PCLayers.change_nObs!(m::PCModule, nObs)
-    m.nObs = nObs
+    
     map(l -> change_nObs!(l, nObs), (m.inputlayer, m.layers...))
     m.predictions, m.errors, m.u, m.du, m.u0, m.initerror = allocate_states((m.inputlayer, m.layers...))
     #m.inputlayer.data = zeros(eltype(m.inputlayer.input), size(m.inputlayer.input)[1:end-1]..., nObs)
@@ -76,6 +86,9 @@ function PCLayers.change_nObs!(m::PCModule, nObs)
     if values(NamedTuple(m.ps.params))[1] isa CuArray
         to_gpu!(m)
     end
+
+    m.nObs = nObs
+    
 end
 
 function PCLayers.allocate_states(layers)
@@ -123,7 +136,7 @@ end
 function PCLayers.get_gradient_activations!(du, u, m::PCModule, x)
     
     # set input layer to x
-    m.inputlayer.data = x
+    m.inputlayer.data .= x
     get_gradient_activations!(values(NamedTuple(du))[1], values(NamedTuple(u))[1], m.inputlayer, values(NamedTuple(m.errors))[1])
 
     # get the gradient of the sum of squared errors with respect to the activations for each layer except the last
@@ -137,7 +150,7 @@ end
 function PCLayers.get_gradient_activations!(du, u, m::PCModule, x, y)
     
     # set input layer to x
-    m.inputlayer.data = x
+    m.inputlayer.data .= x
     get_gradient_activations!(values(NamedTuple(du))[1], values(NamedTuple(u))[1], m.inputlayer, values(NamedTuple(m.errors))[1])
 
     
@@ -170,7 +183,7 @@ end
 
 function PCLayers.get_u0!(u0, m::PCModule, initps, x)
 
-    m.inputlayer.data = x
+    m.inputlayer.data .= x
     values(NamedTuple(m.u0))[1] .= x
 
     for k in eachindex(m.layers)
@@ -181,7 +194,7 @@ end
 
 function PCLayers.get_u0!(u0, m::PCModule, initps, x, y)
 
-    m.inputlayer.data = x
+    m.inputlayer.data .= x
     values(NamedTuple(m.u0))[1] .= x
 
     for k in eachindex(m.layers)
@@ -190,7 +203,7 @@ function PCLayers.get_u0!(u0, m::PCModule, initps, x, y)
 
     # set the last layer's state to the labels y (as this layer is pinned to the label values).
     # we don't set u0 to y because we want to train the initializer to predict the labels from the input.
-    u[m.layers[end].name] .= y
+    m.u[m.layers[end].name] .= y
 
 end
 
@@ -210,6 +223,13 @@ function to_gpu!(m::PCModule)
     m.psgrads = cu(m.psgrads)
     m.receptiveFieldNorms = cu(m.receptiveFieldNorms)
 
+    for l in m.layers
+        if l isa PCConv2Dense
+            l.predictedFlat = cu(l.predictedFlat)
+            l.errorsFlat = cu(l.errorsFlat)
+        end
+    end
+
 end
 
 function to_cpu!(m::PCModule)
@@ -225,6 +245,13 @@ function to_cpu!(m::PCModule)
     m.psgrads = deepcopy(m.ps)
     
     m.receptiveFieldNorms = to_cpu!(m.receptiveFieldNorms)
+
+    for l in m.layers
+        if l isa PCConv2Dense
+            l.predictedFlat = to_cpu!(l.predictedFlat)
+            l.errorsFlat = to_cpu!(l.errorsFlat)
+        end
+    end
 
 end
 

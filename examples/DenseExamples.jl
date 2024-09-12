@@ -56,7 +56,7 @@ n2 = (m, 1)
 
 
 l0 = PCStaticInput(n0, :L0)
-l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
+l1 = PCDense(n1, n0, :L1; σ = relu, shrinkage = 0.1f0);
 mo = PCModule(l0, (l1,))
 
 # Assign the true basis to layer L1's model parameters to analyze the convergence of the forward pass with a fully-trained network
@@ -66,7 +66,7 @@ mo.ps.params.L1 .= w
 fSolver = ForwardEulerSolver(mo, dt = 0.15f0)
 bSolver = BackwardEulerSolver(mo, dt = 0.01f0)
 
-pcn = Pnet(mo, fSolver, bSolver)
+pcn = PCNetwork(mo, fSolver, bSolver)
 
 
 
@@ -150,26 +150,23 @@ n1 = (m, 1)
 
 
 l0 = PCStaticInput(n0, :L0)
-l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
-#l2 = PCDense(n2, n1, relu, 0.1f0, :L2, Float32)
+l1 = PCDense(n1, n0, :L1; σ = relu, shrinkage = 0.1f0);
+
 mo = PCModule(l0, (l1,))
 
 
 fSolver = ForwardEulerSolver(mo, dt = 0.1f0)
 bSolver = BackwardEulerSolver(mo, dt = 0.5f0)
 
-pcn = Pnet(mo, fSolver, bSolver)
-
-
+pcn = PCNetwork(mo, fSolver, bSolver)
 to_gpu!(pcn)
-xc = cu(x)
 
 
 batchSize = 1024 *4
-trainingData = DataLoader(xc, batchsize = batchSize, partial = false, shuffle = true)
+trainingData = Flux.DataLoader(x, batchsize = batchSize, partial = false, shuffle = true)
 
 
-@time trainSteps!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, trainingSteps = 500, followUpRuns = 50, maxFollowUpIters = 5)
+@time train_unsupervised!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, epochs = 250, followUpRuns = 10, maxFollowUpIters = 5, print_batch_error = false)
 
 # look at the convergence of the training algorithm
 scatterlines(get_training_du_logs(pcn))
@@ -200,14 +197,12 @@ scatterlines(get_u0(pcn).L1[:, obs])
 scatterlines(get_states(pcn).L1[:, obs])
 
 # compare the predicted data to the true data. If these are similar, the network is well trained.
-scatterlines(x[:, 1])
-scatterlines(pcn.mo.predictions.L0[:, 1])
+scatterlines(x[:, obs])
+scatterlines(get_predictions(pcn).L0[:, obs])
 
-
+#evaluate the convergence of the training algorithm
 scatterlines(get_du_logs(pcn))
 scatterlines(get_error_logs(pcn))
-#evaluate the convergence of the training algorithm
-
 
 # run the newly trained network
 @time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = true, reset_states = true)
@@ -238,27 +233,21 @@ n1 = (m, 1)
 
 # create layers
 l0 = PCStaticInput(n0, :L0)
-l1 = PCDense(n1, n0, relu, 0.1f0, :L1, Float32)
-#l2 = PCDense(n2, n1, relu, 0.1f0, :L2, Float32)
+l1 = PCDense(n1, n0, :L1; σ = relu, shrinkage = 0.1f0);
 mo = PCModule(l0, (l1,))
 
 
 fSolver = ForwardEulerSolver(mo, dt = 0.1f0)
 bSolver = BackwardEulerSolver(mo, dt = 0.5f0)
-
-pcn = Pnet(mo, fSolver, bSolver)
-
-
+pcn = PCNetwork(mo, fSolver, bSolver)
 to_gpu!(pcn)
-xc = cu(x)
-yc = cu(y)
 
 
-batchSize = 1024 *4
-trainingData = DataLoader((data = xc, label = yc), batchsize = batchSize, partial = false, shuffle = true)
+batchSize = 1024 *8
+trainingData = DataLoader((data = x, label = y), batchsize = batchSize, partial = false, shuffle = true)
 
 
-@time trainSteps!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, trainingSteps = 500, followUpRuns = 50, maxFollowUpIters = 5)
+@time train_supervised!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 250, maxFollowUpIters = 5)
 
 # look at the convergence of the training algorithm
 scatterlines(get_training_du_logs(pcn))
@@ -288,7 +277,7 @@ scatterlines(y[:, 1]) # Wow! The network has learned the true activations y!
 
 # compare the predicted data to the true data. If these are similar, the network is well trained.
 scatterlines(x[:, 1])
-scatterlines(pcn.mo.predictions.L0[:, 1])
+scatterlines(get_predictions(pcn).L0[:, 1])
 
 
 #evaluate the convergence of the training algorithm
