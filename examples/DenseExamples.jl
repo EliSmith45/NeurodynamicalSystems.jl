@@ -74,8 +74,10 @@ pcn = PCNetwork(mo, fSolver, bSolver)
 
 
 # play around with maxIters, stoppingCondition, and dt of the forward solver to see how the network converges
-change_step_size_forward!(pcn, (dt = 0.1f0,))
-@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
+change_step_size_forward!(pcn, (dt = 0.2f0,))
+input = NamedTuple((L0 = x,))
+
+@time pcn(input; maxIters = 100, stoppingCondition = 0.01f0, reinit = true)
 get_states(pcn).L1
 
 obs = 2 # which observation to look at
@@ -91,8 +93,8 @@ scatterlines(get_error_logs(pcn))
 
 
 ########## Running the network with the known optimal weights, supervised ##########
-
-@time pcn(x, y; maxIters = 100, stoppingCondition = 0.000000001f0, use_neural_initializer = true, reset_states = true)
+input = NamedTuple((L0 = x, L1 = y))
+@time pcn(input; maxIters = 100, stoppingCondition = 0.000000001f0, reinit = true)
 get_states(pcn)
 
 f = scatterlines(get_states(pcn).L1[:, 1])
@@ -107,18 +109,19 @@ scatterlines(get_error_logs(pcn))
 ########## Running the network with the known optimal weights, unsupervised, on the GPU ##########
 
 to_gpu!(pcn); #move to GPU 
-xc = cu(x) #move data to GPU 
+input = NamedTuple((L0 = cu(x),)) #move data to GPU 
 
 
-@time pcn(xc; maxIters = 50, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
+@time pcn(input; maxIters = 50, stoppingCondition = 0.01f0, reinit = true)
 
 to_cpu!(pcn)
 get_states(pcn)
 
-f = scatterlines(get_states(pcn).L1[:, 1])
-scatterlines!(y[:, 1])
+obs = 2
+f = scatterlines(get_states(pcn).L1[:, obs])
+scatterlines!(y[:, obs])
 f
-scatterlines(get_u0(pcn).L1[:, 1])
+scatterlines(get_u0(pcn).L1[:, obs])
 
 scatterlines(get_du_logs(pcn))
 scatterlines(get_error_logs(pcn))
@@ -131,7 +134,7 @@ heatmap(get_model_parameters(pcn).L1)
 # make a much larger data set
 n = 64; #number of bases
 m = 64; 
-nObs = 1024 * 24
+nObs = 1024 * 48
 
 sigma = Float32(1/n); #width of each Gaussian
 w = gaussian_basis(n, m; sigma = sigma) #make gaussian basis
@@ -150,24 +153,23 @@ n1 = (m, 1)
 
 
 l0 = PCStaticInput(n0, :L0)
-l1 = PCDense(n1, n0, :L1; σ = relu, shrinkage = 0.1f0);
+l1 = PCDense(n1, n0, :L1; σ = relu, shrinkage = 0.0f0);
 
 mo = PCModule(l0, (l1,))
 
 
 fSolver = ForwardEulerSolver(mo, dt = 0.1f0)
-bSolver = BackwardEulerSolver(mo, dt = 0.5f0)
+bSolver = BackwardEulerSolver(mo, dt = 0.1f0)
 
 pcn = PCNetwork(mo, fSolver, bSolver)
 to_gpu!(pcn)
 
 
-batchSize = 1024 *4
-trainingData = Flux.DataLoader(x, batchsize = batchSize, partial = false, shuffle = true)
+batchSize = 1024 * 8
+trainingData = Flux.DataLoader((L0 = x,), batchsize = batchSize, partial = false, shuffle = true)
 
-
-@time train_unsupervised!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, epochs = 250, followUpRuns = 10, maxFollowUpIters = 5, print_batch_error = false)
-
+@time train_unsupervised!(pcn, trainingData; maxIters = 75, stoppingCondition = 0.0025f0, epochs = 20, followUpRuns = 2000, maxFollowUpIters = 5, print_batch_error = false)
+change_step_size_backward!(pcn, (dt = 0.05f0,))
 # look at the convergence of the training algorithm
 scatterlines(get_training_du_logs(pcn))
 scatterlines(get_training_error_logs(pcn))
@@ -184,7 +186,7 @@ heatmap(get_initializer_parameters(pcn).L1')
 
 
 # run the newly trained network
-@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
+@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, reinit = true)
 
 
 
@@ -205,7 +207,7 @@ scatterlines(get_du_logs(pcn))
 scatterlines(get_error_logs(pcn))
 
 # run the newly trained network
-@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = true, reset_states = true)
+@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, reinit = true)
 
 
 
@@ -247,10 +249,10 @@ batchSize = 1024 *8
 trainingData = DataLoader((data = x, label = y), batchsize = batchSize, partial = false, shuffle = true)
 
 
-@time train_supervised!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 250, maxFollowUpIters = 5)
-
+@time train_supervised!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 1000, maxFollowUpIters = 5)
+change_step_size_backward!(pcn, (dt = 0.9f0,))
 # look at the convergence of the training algorithm
-scatterlines(get_training_du_logs(pcn))
+scatterlines(get_training_du_logs(pcn)[5:end])
 scatterlines(get_training_error_logs(pcn))
 
 
@@ -265,7 +267,7 @@ heatmap(get_initializer_parameters(pcn).L1')
 
 
 # run the newly trained network
-@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
+@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, reinit = true)
 
 
 
@@ -289,7 +291,7 @@ itersWithoutInitializer = get_iters(pcn)
 
 
 # run the network again, this time with the initializer
-@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = true, reset_states = true)
+@time pcn(x; maxIters = 100, stoppingCondition = 0.01f0, reinit = true)
 
 duLogsWithInitializer = get_du_logs(pcn)
 errorLogsWithInitializer = get_error_logs(pcn)

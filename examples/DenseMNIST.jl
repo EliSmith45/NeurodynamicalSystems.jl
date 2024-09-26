@@ -85,7 +85,7 @@ scatterlines(get_training_du_logs(pcn)[1000:1000:end])
 scatterlines(get_training_error_logs(pcn)[15000:1000:end])
 # run the newly trained network
 trainFeaturesc = cu(trainFeatures[:, 1:1024])
-@time pcn(trainFeaturesc; maxIters = 100, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
+@time pcn(trainFeaturesc; maxIters = 100, stoppingCondition = 0.01f0, reinit = true)
 
 scatterlines(get_du_logs(pcn))
 scatterlines(get_error_logs(pcn))

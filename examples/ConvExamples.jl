@@ -20,15 +20,16 @@ function read_mnist_conv(trainsize = 10000, split = :train)
         labels[x.targets[i] + 1, i] = 1.0f0
     end
     
-    ind = StatsBase.sample(1:size(features)[end], trainsize, replace = false)
-    return features[:, :, :, ind], labels[:, ind]
+    #ind = StatsBase.sample(1:size(features)[end], trainsize, replace = false)
+    return features[:, :, :, 1:trainsize], labels[:, 1:trainsize]
 end
+
 
 features, labels = read_mnist_conv(60000, :train)
 ##### examples of convolutional predictive coding networks on MNIST #####
+heatmap(features[:, :, 1, 1]')
 
-
-
+labels[:, 1]
 #set up the network
 nObs = 12
 l0 = PCStaticInput((28, 28, 1, nObs), :L0);
@@ -37,7 +38,7 @@ l2 = PCConv2Dense((10, nObs), get_state_size(l1), :L2; σ = relu, shrinkage = .1
 
 mo = PCModule(l0, (l1, l2));
 fSolver = ForwardEulerSolver(mo, dt = 0.025f0);
-bSolver = BackwardEulerSolver(mo, dt = 0.00001f0);
+bSolver = BackwardEulerSolver(mo, dt = 0.000005f0);
 pcn = PCNetwork(mo, fSolver, bSolver);
 
 # run the network on the CPU if you're curious about how much faster the GPU is
@@ -66,11 +67,11 @@ get_states(pcn).L2
 #train the network
 
 recommend_batch_size(pcn, 5.0)
-batchSize = 1024 * 2
+batchSize = 1024
 
-nObs = batchSize * 4
+nObs = 24000
 trainingData = DataLoader((data = features[:, :, :, 1:nObs], label = labels[:, 1:nObs]), batchsize = batchSize, partial = false, shuffle = true)
-@time train_supervised!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, epochs = 10, followUpRuns = 100, maxFollowUpIters = 5)
+@time train_supervised!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, epochs = 5000, followUpRuns = 200, maxFollowUpIters = 5)
 
 
 change_step_size_backward!(pcn, (dt = .0000015f0,))

@@ -12,53 +12,30 @@ include("./PCModules.jl")
 
 export EulerSolver, ForwardEulerSolver, BackwardEulerSolver
 export HeunSolver, ForwardHeunSolver, BackwardHeunSolver
-export EulerAdaptiveSolver, forwardEulerAdaptiveSolver, backwardEulerAdaptiveSolver
-export Adam, forwardAdamSolver, backwardAdamSolver
-export Eve, forwardEveSolver, backwardEveSolver
-export forwardSolverStep!, backwardSolverStep!, forwardSolve!, forward_solve_logged!, change_step_size!
+export EulerAdaptiveSolver, ForwardEulerAdaptiveSolver, BackwardEulerAdaptiveSolver
+export Adam, ForwardAdamSolver, BackwardAdamSolver
+export Eve, ForwardEveSolver, BackwardEveSolver
+export initialize_forward!, initialize_backward!, forwardSolverStep!, backwardSolverStep!, forward_solve!, forward_solve_logged!, change_step_size!
 
 abstract type AbstractSolver end # abstract type for the solvers 
 
 ##### Generic functions #####
 
-# iterates through the steps. This is the unsupervised forward pass of the PC network
-function forwardSolve!(s::AbstractSolver, x; maxSteps = 50, stoppingCondition = 0.01f0, log_trajectories = false)
+# iterates through the steps. This is the forward pass of the PC network
+function forward_solve!(s::AbstractSolver, x; maxSteps = 50, stoppingCondition = 0.01f0, reinit = true)
 
-    if log_trajectories
-        trajectories = [zeros(eltype(s.pcmodule.u0), s.pcmodule.layers[i].statesize[1:end - 1], maxSteps) for i in 1:length(s.pcmodule.layers)]
-
-    end
     if length(s.errorLogs) != maxSteps
         s.errorLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
         s.duLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
     end
 
     s.iter_reached = maxSteps #will be updated if the stopping condition is reached before maxSteps
+
+    initialize_forward!(s, x, reinit)
 
     for i in 1:maxSteps
         forwardSolverStep!(s, x, i)
-
-        if s.duLogs[i] < stoppingCondition 
-            s.iter_reached = i
-            break
-        end
         
-    end
-end
-
-# iterates through the steps. This is the supervised forward pass of the PC network
-function forwardSolve!(s::AbstractSolver, x, y; maxSteps = 50, stoppingCondition = 0.01f0)
-
-    if length(s.errorLogs) != maxSteps
-        s.errorLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
-        s.duLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
-    end
-
-    s.iter_reached = maxSteps #will be updated if the stopping condition is reached before maxSteps
-
-    for i in 1:maxSteps
-        forwardSolverStep!(s, x, y, i)
-
         if s.duLogs[i] < stoppingCondition 
             s.iter_reached = i
             break
@@ -68,10 +45,12 @@ function forwardSolve!(s::AbstractSolver, x, y; maxSteps = 50, stoppingCondition
 end
 
 
-# iterates through the steps. This is the unsupervised forward pass of the PC network
-function forward_solve_logged!(s::AbstractSolver, x; maxSteps = 50, stoppingCondition = 0.01f0)
 
-    trajectories = [zeros(eltype(s.pcmodule.u0), s.pcmodule.layers[i].statesize[1:end - 1], maxSteps) for i in 1:length(s.pcmodule.layers)]
+
+# iterates through the steps of the forward pass and logs the trajectories of the activations
+function forward_solve_logged!(s::AbstractSolver, x; maxSteps = 50, stoppingCondition = 0.01f0, reinit = true)
+
+    trajectories = [zeros(eltype(s.pcmodule.u0), s.pcmodule.layers[i].statesize[1:end - 1]..., maxSteps) for i in 1:length(s.pcmodule.layers)]
     
     if length(s.errorLogs) != maxSteps
         s.errorLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
@@ -80,40 +59,30 @@ function forward_solve_logged!(s::AbstractSolver, x; maxSteps = 50, stoppingCond
 
     s.iter_reached = maxSteps #will be updated if the stopping condition is reached before maxSteps
 
+    initialize_forward!(s, x, reinit)
+    
+
     for i in 1:maxSteps
         forwardSolverStep!(s, x, i)
 
+        for j in eachindex(trajectories)
+            trajectories[j][:, i] .= values(NamedTuple(s.pcmodule.u))[j + 1]
+        end
+
         if s.duLogs[i] < stoppingCondition 
             s.iter_reached = i
-            break
-        end
-        
-    end
-end
 
-# iterates through the steps. This is the supervised forward pass of the PC network
-function forward_solve_logged!(s::AbstractSolver, x, y; maxSteps = 50, stoppingCondition = 0.01f0)
-
-    trajectories = [zeros(eltype(s.pcmodule.u0), s.pcmodule.layers[i].statesize[1:end - 1], maxSteps) for i in 1:length(s.pcmodule.layers)]
+            for j in eachindex(trajectories)
+                trajectories[j] = trajectories[j][:, 1:i]
+            end
     
-    if length(s.errorLogs) != maxSteps
-        s.errorLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
-        s.duLogs = zeros(eltype(s.pcmodule.u0), maxSteps)
-    end
-
-    s.iter_reached = maxSteps #will be updated if the stopping condition is reached before maxSteps
-
-    for i in 1:maxSteps
-        forwardSolverStep!(s, x, y, i)
-
-        if s.duLogs[i] < stoppingCondition 
-            s.iter_reached = i
-            break
+            return trajectories
         end
         
     end
-end
 
+    return trajectories
+end
 
 # calculates and logs the values used to analyze the convergence of the forward pass
 function forward_convergence_check(s::AbstractSolver, i)
@@ -203,6 +172,16 @@ function BackwardEulerSolver(m::PCModule; dt = 0.001f0)
 
 end
 
+#no setup has to be done with Euler's method for the forward pass but we need this function for consistency. 
+function initialize_forward!(s::EulerSolver, x, reinit)
+    
+end
+
+#no setup has to be done with Euler's method for the backward pass but we need this function for consistency. 
+function initialize_backward!(s::EulerSolver, reinit)
+end
+
+
 function forwardSolverStep!(s::EulerSolver, x, i)
 
     make_predictions!(s.pcmodule, s.pcmodule.ps.params, s.pcmodule.u)
@@ -215,19 +194,8 @@ function forwardSolverStep!(s::EulerSolver, x, i)
 
 end
 
-function forwardSolverStep!(s::EulerSolver, x, y, i)
 
-    make_predictions!(s.pcmodule, s.pcmodule.ps.params, s.pcmodule.u)
-    get_gradient_activations!(s.pcmodule.du, s.pcmodule.u, s.pcmodule, x, y)
-
-    s.pcmodule.u .+= s.dt .* s.pcmodule.du
-    s.pcmodule.u .= relu.(s.pcmodule.u)
-
-    forward_convergence_check(s, i)
-
-end
-
-function backwardSolverStep!(s::EulerSolver, checkConvergence)
+function backwardSolverStep!(s::EulerSolver, checkConvergence, reinit = false)
     
     s.pcmodule.initerror .= s.pcmodule.u .- s.pcmodule.u0
     get_gradient_parameters!(s.pcmodule.psgrads, s.pcmodule)
@@ -356,12 +324,34 @@ function BackwardHeunSolver(m::PCModule; dt = 0.001f0)
 
 end
 
-function forwardSolverStep!(s::HeunSolver, x, i)
+function initialize_forward!(s::HeunSolver, x, reinit)
+    
+    get_u0!(s.pcmodule.u0, s.pcmodule, s.pcmodule.ps.initps, x)
+    if reinit
+        s.pcmodule.u .= s.pcmodule.u0
 
-    # first step
-    make_predictions!(s.pcmodule, s.pcmodule.ps.params, s.pcmodule.u)
-    get_gradient_activations!(s.dk1, s.pcmodule.u, s.pcmodule, x)
-    s.k1 .= relu.(s.pcmodule.u .+ ((s.dt / 2) .* s.dk1))
+        # first step
+        make_predictions!(s.pcmodule, s.pcmodule.ps.params, s.pcmodule.u)
+        get_gradient_activations!(s.dk1, s.pcmodule.u, s.pcmodule, x)
+        s.k1 .= relu.(s.pcmodule.u .+ ((s.dt / 2) .* s.dk1))
+        
+    end
+    
+end
+
+
+function initialize_backward!(s::HeunSolver, reinit)
+    
+    if reinit
+        s.pcmodule.initerror .= s.pcmodule.u .- s.pcmodule.u0
+        get_gradient_parameters!(s.dk1, s.pcmodule)
+        s.k1 .= s.pcmodule.ps .+ ((s.dt / (2 * s.pcmodule.nObs)) .* s.dk1)
+    end
+    
+end
+
+
+function forwardSolverStep!(s::HeunSolver, x, i)
 
     # second step
     make_predictions!(s.pcmodule, s.pcmodule.ps.params, s.k1)
@@ -371,36 +361,16 @@ function forwardSolverStep!(s::HeunSolver, x, i)
     # enforce nonnegativity of activations
     s.pcmodule.u .= relu.(s.pcmodule.u)
 
+    s.dk1 .= s.pcmodule.du
+    s.k1 .= relu.(s.pcmodule.u .+ (s.dt .* s.dk1))
     forward_convergence_check(s, i)
 
 end
 
-function forwardSolverStep!(s::HeunSolver, x, y, i)
-
-    # first step
-    make_predictions!(s.pcmodule, s.pcmodule.ps.params, s.pcmodule.u)
-    get_gradient_activations!(s.dk1, s.pcmodule.u, s.pcmodule, x, y)
-    s.k1 .= relu.(s.pcmodule.u .+ ((s.dt / 2) .* s.dk1))
-
-    # second step
-    make_predictions!(s.pcmodule, s.pcmodule.ps.params, s.k1)
-    get_gradient_activations!(s.pcmodule.du, s.k1, s.pcmodule, x, y)
-    s.pcmodule.u .+= s.dt .* s.pcmodule.du
-
-    # enforce nonnegativity of activations
-    s.pcmodule.u .= relu.(s.pcmodule.u)
-
-    forward_convergence_check(s, i)
-   
-
-end
 
 function backwardSolverStep!(s::HeunSolver, checkConvergence)
     
-    s.pcmodule.initerror .= s.pcmodule.u .- s.pcmodule.u0
-    get_gradient_parameters!(s.dk1, s.pcmodule)
-    s.k1 .= s.pcmodule.ps .+ ((s.dt / (2 * s.pcmodule.nObs)) .* s.dk1)
-
+    
     make_predictions!(s.pcmodule, s.k1.params, s.pcmodule.u)
     get_u0!(s.pcmodule.u0, s.pcmodule, s.k1.initps, s.pcmodule.inputlayer.data)
     s.pcmodule.initerror .= s.pcmodule.u .- s.pcmodule.u0
@@ -409,6 +379,9 @@ function backwardSolverStep!(s::HeunSolver, checkConvergence)
     s.pcmodule.ps .+= (s.dt / s.pcmodule.nObs) .* s.pcmodule.psgrads
     s.pcmodule.ps.params .= relu.(s.pcmodule.ps.params)
     
+    s.dk1 .= s.pcmodule.psgrads
+    s.k1 .= relu.(s.pcmodule.ps .+ (s.dt / s.pcmodule.nObs) .* s.dk1)
+
     if checkConvergence
         backward_convergence_check(s)
     end
@@ -489,7 +462,7 @@ mutable struct EulerAdaptiveSolver <: AbstractSolver
     mode
 end
 
-function forwardEulerAdaptiveSolver(m::PCModule; dt = 0.001f0)
+function ForwardEulerAdaptiveSolver(m::PCModule; dt = 0.001f0)
 
     k1 = deepcopy(m.u0)
     dk1 = deepcopy(m.u0)
@@ -503,7 +476,7 @@ function forwardEulerAdaptiveSolver(m::PCModule; dt = 0.001f0)
     EulerAdaptiveSolver(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "forward")
 end
 
-function backwardEulerAdaptiveSolver(m::PCModule; dt = 0.001f0)
+function BackwardEulerAdaptiveSolver(m::PCModule; dt = 0.001f0)
 
     k1 = deepcopy(m.ps)
     dk1 = deepcopy(m.ps)
@@ -523,10 +496,12 @@ end
 
 mutable struct Adam <: AbstractSolver
     pcmodule
-    dt
+    α
+    β1
+    β2
 
-    k1 # value of u at the start of the step
-    dk1 # gradient of u at the start of the step
+    m # value of u at the start of the step
+    v # gradient of u at the start of the step
     
     c1
     c2
@@ -537,34 +512,144 @@ mutable struct Adam <: AbstractSolver
     mode
 end
 
-function forwardAdamSolver(m::PCModule; dt = 0.001f0)
+function ForwardAdamSolver(mo::PCModule; α = 0.001f0, β1 = 0.9f0, β2 = 0.999f0)
 
-    k1 = deepcopy(m.u0)
-    dk1 = deepcopy(m.u0)
+    m = deepcopy(mo.u0)
+    v = deepcopy(mo.u0)
 
-    c1 = deepcopy(m.u0)
-    c2 = deepcopy(m.u0)
+    c1 = deepcopy(mo.u0)
+    c2 = deepcopy(mo.u0)
 
-    errorLogs = zeros(eltype(m.u0), 1)
-    duLogs = zeros(eltype(m.u0), 1)
+    errorLogs = zeros(eltype(mo.u0), 1)
+    duLogs = zeros(eltype(mo.u0), 1)
 
-    Adam(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "forward")
+    Adam(mo, α, β1, β2, m, v, c1, c2, errorLogs, duLogs, 1, "forward")
 end
 
-function backwardAdamSolver(m::PCModule; dt = 0.001f0)
+function BackwardAdamSolver(mo::PCModule; α = 0.001f0, β1 = 0.9f0, β2 = 0.999f0)
 
-    k1 = deepcopy(m.ps)
-    dk1 = deepcopy(m.ps)
+    m = deepcopy(mo.ps)
+    v = deepcopy(mo.ps)
 
-    c1 = deepcopy(m.ps)
-    c2 = deepcopy(m.ps)
+    c1 = deepcopy(mo.ps)
+    c2 = deepcopy(mo.ps)
 
-    errorLogs = eltype(m.ps)[]
-    duLogs = eltype(m.ps)[]
+    errorLogs = eltype(mo.ps)[]
+    duLogs = eltype(mo.ps)[]
 
-    Adam(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "backward")
+    Adam(mo, α, β1, β2, m, v, c1, c2, errorLogs, duLogs, 1, "backward")
 
 end
+
+#  We must zero out the m and v arrays every time we switch to a new batch with Adam, because the activations have a different fixed point across batches
+function initialize_forward!(s::Adam, x, reinit) 
+    s.m .= 0
+    s.v .= 0
+end
+
+# We do NOT zero out m and v on the backward pass, because the parameters have the same fixed point across all batches
+function initialize_backward!(s::Adam, reinit)
+end
+
+
+function forwardSolverStep!(s::Adam, x, i)
+
+    make_predictions!(s.pcmodule, s.pcmodule.ps.params, s.pcmodule.u)
+    get_gradient_activations!(s.pcmodule.du, s.pcmodule.u, s.pcmodule, x)
+    
+    s.m .= s.β1 .* s.m .+ (1 - s.β1) .* s.pcmodule.du
+    s.v .= s.β2 .* s.v .+ (1 - s.β2) .* (s.pcmodule.du .^ 2)
+    
+    s.m ./= (1 - s.β1 ^ i)
+    s.v ./= (1 - s.β2 ^ i)
+    
+    s.pcmodule.u .+= s.α .* s.m ./ (sqrt.(s.v) .+ eps())
+    s.pcmodule.u .= relu.(s.pcmodule.u)
+
+    forward_convergence_check(s, i)
+
+end
+
+
+function backwardSolverStep!(s::Adam, checkConvergence)
+    
+    make_predictions!(s.pcmodule, s.pcmodule.ps.params, s.pcmodule.u)
+    get_u0!(s.pcmodule.u0, s.pcmodule, s.pcmodule.ps.initps, s.pcmodule.inputlayer.data)
+    s.pcmodule.initerror .= s.pcmodule.u .- s.pcmodule.u0
+    get_gradient_parameters!(s.pcmodule.psgrads, s.pcmodule)
+
+    s.m .= s.β1 .* s.m .+ (1 - s.β1) .* s.pcmodule.psgrads
+    s.v .= s.β2 .* s.v .+ (1 - s.β2) .* (s.pcmodule.psgrads .^ 2)
+    
+    s.m ./= (1 - s.β1)
+    s.v ./= (1 - s.β2)
+    
+    s.pcmodule.ps .+= s.α .* s.m ./ (sqrt.(s.v) .+ eps())
+    s.pcmodule.ps.params .= relu.(s.pcmodule.ps.params)
+    
+    if checkConvergence
+        backward_convergence_check(s)
+    end
+
+    normalize_receptive_fields!(s.pcmodule)
+
+end
+
+function change_step_size!(s::Adam, stepSize::NamedTuple)
+    s.α = stepSize.α
+    s.β1 = stepSize.β1
+    s.β2 = stepSize.β2
+end
+
+function PCLayers.change_nObs!(s::Adam, nObs)
+
+    if s.mode == "forward"
+        s.m = deepcopy(s.pcmodule.u0)
+        s.v = deepcopy(s.pcmodule.u0)
+        s.c1 = deepcopy(s.pcmodule.u0)
+        s.c2 = deepcopy(s.pcmodule.u0)
+    elseif s.mode == "backward"
+        s.m = deepcopy(s.pcmodule.ps)
+        s.v = deepcopy(s.pcmodule.ps)
+        s.c1 = deepcopy(s.pcmodule.ps)
+        s.c2 = deepcopy(s.pcmodule.ps)
+    end
+
+end
+
+function PCModules.to_gpu!(s::Adam)
+    
+    if s.mode == "forward"
+        s.m = deepcopy(s.pcmodule.u0)
+        s.v = deepcopy(s.pcmodule.u0)
+        s.c1 = deepcopy(s.pcmodule.u0)
+        s.c2 = deepcopy(s.pcmodule.u0)
+    elseif s.mode == "backward"
+        s.m = deepcopy(s.pcmodule.ps)
+        s.v = deepcopy(s.pcmodule.ps)
+        s.c1 = deepcopy(s.pcmodule.ps)
+        s.c2 = deepcopy(s.pcmodule.ps)
+    end
+    
+end
+
+function PCModules.to_cpu!(s::Adam)
+
+    if s.mode == "forward"
+        s.m = deepcopy(s.pcmodule.u0)
+        s.v = deepcopy(s.pcmodule.u0)
+        s.c1 = deepcopy(s.pcmodule.u0)
+        s.c2 = deepcopy(s.pcmodule.u0)
+    elseif s.mode == "backward"
+        s.m = deepcopy(s.pcmodule.ps)
+        s.v = deepcopy(s.pcmodule.ps)
+        s.c1 = deepcopy(s.pcmodule.ps)
+        s.c2 = deepcopy(s.pcmodule.ps)
+    end
+    
+end
+
+
 
 ##### Eve optimiser #####
 
@@ -593,7 +678,7 @@ mutable struct Eve <: AbstractSolver
     mode
 end
 
-function forwardEveSolver(m::PCModule; dt = 0.001f0)
+function ForwardEveSolver(m::PCModule; dt = 0.001f0)
 
     k1 = deepcopy(m.u0)
     dk1 = deepcopy(m.u0)
@@ -607,7 +692,7 @@ function forwardEveSolver(m::PCModule; dt = 0.001f0)
     Eve(m, dt, k1, dk1, c1, c2, errorLogs, duLogs, 1, "forward")
 end
 
-function backwardEveSolver(m::PCModule; dt = 0.001f0)
+function BackwardEveSolver(m::PCModule; dt = 0.001f0)
 
     k1 = deepcopy(m.ps)
     dk1 = deepcopy(m.ps)

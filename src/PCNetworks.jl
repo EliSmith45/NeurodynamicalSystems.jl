@@ -33,45 +33,32 @@ mutable struct PCNetwork
 end
 
 
-function (m::PCNetwork)(x; maxIters = 50, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
-    if m.pcmodule.nObs != size(x)[end]
-        change_nObs!(m, size(x)[end])
+function (m::PCNetwork)(x; maxIters = 50, stoppingCondition = 0.01f0, reinit = true)
+    if m.pcmodule.nObs != size(first(x))[end]
+        change_nObs!(m, size(first(x))[end])
     end
 
-    get_u0!(m.pcmodule.u0, m.pcmodule, m.pcmodule.ps.initps, x)
+    for k in keys(x)
+        m.pcmodule.u0[k] .= x[k]
+        m.pcmodule.u[k] .= x[k]
+        m.pcmodule.du[k] .= 0
+    end
 
-    
-    if use_neural_initializer
+    get_u0!(m.pcmodule.u0, m.pcmodule, m.pcmodule.ps.initps)
+    if reinit
         m.pcmodule.u .= m.pcmodule.u0
-    elseif reset_states
-        m.pcmodule.u .= 0
-        values(NamedTuple(m.pcmodule.u))[1] .= x
+
+        # reset the clamped layers to the input values
+        for k in keys(x)
+            m.pcmodule.u[k] .= x[k]
+        end
     end
-    
-    forwardSolve!(m.actOpt, x; maxSteps = maxIters, stoppingCondition = stoppingCondition)
+
+    forward_solve!(m.actOpt, x; maxSteps = maxIters, stoppingCondition = stoppingCondition, reinit)
 end
 
-function (m::PCNetwork)(x, y; maxIters = 50, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
-    if m.pcmodule.nObs != size(x)[end]
-        change_nObs!(m, size(x)[end])
-    end
 
-    get_u0!(m.pcmodule.u0, m.pcmodule, m.pcmodule.ps.initps, x, y)
-
-    
-
-    
-    if use_neural_initializer
-        m.pcmodule.u .= m.pcmodule.u0
-    elseif reset_states
-        m.pcmodule.u .= 0
-        values(NamedTuple(m.pcmodule.u))[1] .= x
-    end
-    
-    forwardSolve!(m.actOpt, x, y; maxSteps = maxIters, stoppingCondition = stoppingCondition)
-end
-
-function log_trajectories(m::PCNetwork, x; maxIters = 50, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
+function log_trajectories(m::PCNetwork, x; maxIters = 50, stoppingCondition = 0.01f0, reinit = true)
     
     if size(x)[end] != 1
         println("This function is only for logging the trajectories of a single observation.")
@@ -81,44 +68,10 @@ function log_trajectories(m::PCNetwork, x; maxIters = 50, stoppingCondition = 0.
     if m.pcmodule.nObs != size(x)[end]
         change_nObs!(m, size(x)[end])
     end
-
-    get_u0!(m.pcmodule.u0, m.pcmodule, m.pcmodule.ps.initps, x)
-
     
-    if use_neural_initializer
-        m.pcmodule.u .= m.pcmodule.u0
-    elseif reset_states
-        m.pcmodule.u .= 0
-        values(NamedTuple(m.pcmodule.u))[1] .= x
-    end
-    
-    forward_solve_logged!(m.actOpt, x; maxSteps = maxIters, stoppingCondition = stoppingCondition)
+    forward_solve_logged!(m.actOpt, x; maxSteps = maxIters, stoppingCondition = stoppingCondition, reinit)
 end
 
-
-function log_trajectories(m::PCNetwork, x, y; maxIters = 50, stoppingCondition = 0.01f0, use_neural_initializer = false, reset_states = true)
-    
-    if size(x)[end] != 1
-        println("This function is only for logging the trajectories of a single observation.")
-        return
-    end
-    
-    if m.pcmodule.nObs != size(x)[end]
-        change_nObs!(m, size(x)[end])
-    end
-
-    get_u0!(m.pcmodule.u0, m.pcmodule, m.pcmodule.ps.initps, x)
-
-    
-    if use_neural_initializer
-        m.pcmodule.u .= m.pcmodule.u0
-    elseif reset_states
-        m.pcmodule.u .= 0
-        values(NamedTuple(m.pcmodule.u))[1] .= x
-    end
-    
-    forward_solve_logged!(m.actOpt, x, y; maxSteps = maxIters, stoppingCondition = stoppingCondition)
-end
 
 """
     train_unsupervised!(m::PCNetwork, trainingData::Flux.DataLoader; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 10, maxFollowUpIters = 10, print_batch_error = true)
@@ -158,7 +111,8 @@ function train_unsupervised!(m::PCNetwork, trainingData::Flux.DataLoader; maxIte
                 xb = cu(xb)
             end
 
-            m(xb; maxIters = maxIters, stoppingCondition = stoppingCondition, use_neural_initializer = true, reset_states = false)
+            m(xb; maxIters = maxIters, stoppingCondition = stoppingCondition, reinit = true)
+            initialize_backward!(m.psOpt, true)
             backwardSolverStep!(m.psOpt, true)
             
             if print_batch_error
@@ -167,12 +121,8 @@ function train_unsupervised!(m::PCNetwork, trainingData::Flux.DataLoader; maxIte
             
             for j in 1:followUpRuns
 
-                m(xb; maxIters = maxFollowUpIters, stoppingCondition = stoppingCondition, use_neural_initializer = false, reset_states = false)
+                m(xb; maxIters = maxFollowUpIters, stoppingCondition = stoppingCondition, reinit = false)
                 backwardSolverStep!(m.psOpt, false)
-            end
-
-            if onGPU
-                CUDA.unsafe_free!(xb)
             end
 
         end
@@ -226,20 +176,20 @@ function train_supervised!(m::PCNetwork, trainingData::Flux.DataLoader; maxIters
                 ybc = cu(yb)
             end
             
-            m(xbc, ybc; maxIters = maxIters, stoppingCondition = stoppingCondition, use_neural_initializer = true, reset_states = false)
-            
+            m(xbc, ybc; maxIters = maxIters, stoppingCondition = stoppingCondition, reinit = true)
+            initialize_backward!(m.psOpt, true)
             backwardSolverStep!(m.psOpt, true)
 
 
             for j in 1:followUpRuns
 
-                m(xbc, ybc; maxIters = maxFollowUpIters, stoppingCondition = stoppingCondition, use_neural_initializer = false, reset_states = false)
+                m(xbc, ybc; maxIters = maxFollowUpIters, stoppingCondition = stoppingCondition, reinit = false)
                 backwardSolverStep!(m.psOpt, false)
 
             end
 
             if print_batch_error
-                m(xbc; maxIters = maxIters, stoppingCondition = stoppingCondition, use_neural_initializer = true, reset_states = true)
+                m(xbc; maxIters = maxIters, stoppingCondition = stoppingCondition, reinit = true)
                 a = classification_accuracy(get_states(m), ybc)
                 println("Batch $k error: $(m.psOpt.errorLogs[end]), du: $(m.psOpt.duLogs[end]), accuracy = $a")
             end

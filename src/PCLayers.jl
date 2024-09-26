@@ -382,8 +382,7 @@ mutable struct PCStaticInput <: PCLayer
 
     statesize
     inputsize
-
-    data 
+ 
     name
     T
 
@@ -407,19 +406,20 @@ Create a PCStaticInput layer.
 
 """
 function PCStaticInput(in_dims, name::Symbol, T = Float32)
-    data = zeros(T, in_dims)
-    PCStaticInput(in_dims, in_dims, data, name, T)
+    #data = zeros(T, in_dims)
+    PCStaticInput(in_dims, in_dims, name, T)
 end
 
 function allocate_states(layer::PCStaticInput)
-    layer.data = zeros(layer.T, layer.statesize...)
-    deepcopy(layer.data)
+    #layer.data = zeros(layer.T, layer.statesize...)
+    #deepcopy(layer.data)
+    zeros(layer.T, layer.statesize...)
 end
 
 # Makes the static input layer callable to calculate state updates in the ODE system
-function get_gradient_activations!(du, u, layer::PCStaticInput, errors_l)
+function get_gradient_activations!(du, u, layer::PCStaticInput, errors_l, x)
     du .= 0
-    u .= layer.data
+    u .= x
 end
 
 
