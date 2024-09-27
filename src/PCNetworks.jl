@@ -9,7 +9,7 @@ include("./Utils.jl")
 @reexport using .PCSolvers
 using .Utils
 
-export PCNetwork, log_trajectories, train_unsupervised!, train_supervised!, change_step_size_forward!, recommend_batch_size, change_step_size_backward!
+export PCNetwork, log_trajectories, train!, change_step_size_forward!, recommend_batch_size, change_step_size_backward!
 export get_states, get_errors, get_predictions, get_error_logs, get_du_logs, get, get_training_error_logs, get_training_du_logs, get_u0, get_iters, get_model_parameters, get_initializer_parameters
 
 
@@ -74,9 +74,9 @@ end
 
 
 """
-    train_unsupervised!(m::PCNetwork, trainingData::Flux.DataLoader; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 10, maxFollowUpIters = 10, print_batch_error = true)
+    train!(m::PCNetwork, trainingData::Flux.DataLoader; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 10, maxFollowUpIters = 10, print_batch_error = true)
 
-Train the PCNetwork `m` using unsupervised learning on the `trainingData` DataLoader. This learns the parameters which minimize the prediction error across all layers.
+Train the PCNetwork `m` using either unsupervised or supervised learning on the `trainingData` DataLoader, depending on the structure of the data. This learns the parameters which minimize the prediction error across all layers. For unsupervised learning, the DataLoader should be created by setting the input data to a NamedTuple with one element who's key is the name of the input layer. For supervised learning, the input data to DataLoader should be a NamedTuple with two elements, one for the input data and one for the labels. 
 
 # Arguments
 - `m::PCNetwork`: The PCNetwork model to be trained, on the GPU if desired.
@@ -91,7 +91,7 @@ Train the PCNetwork `m` using unsupervised learning on the `trainingData` DataLo
 # Examples
 """
 
-function train_unsupervised!(m::PCNetwork, trainingData::Flux.DataLoader; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 10, maxFollowUpIters = 10, print_batch_error = true)
+function train!(m::PCNetwork, trainingData::Flux.DataLoader; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 10, maxFollowUpIters = 10, print_batch_error = true)
     
     if first(trainingData) isa CuArray
 
@@ -138,72 +138,38 @@ end
 
 
 """
-    train_supervised!(m::PCNetwork, trainingData::Flux.DataLoader; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 10, maxFollowUpIters = 10, print_batch_error = true)
+    train!(m::PCNetwork, trainingData::NamedTuple; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 10, maxFollowUpIters = 10, print_batch_error = true)
 
-Train a PCNetwork model using supervised learning. This still learns to minimize the prediction error across all layers rather than directly learning to predict labels as is typical in supervised learning. Instead, we simply pin the final layer to the labels and learn the parameters which minimize the prediction error.
+Train the PCNetwork `m` on a single batch of data. The network is never reinitialized (though the initializer is called each training step to train the initializer, which greatly speeds up inference when using the trained network), so all training steps are follow-up runs. This dramatically speeds up training, but can only be used when the entire training set, model, and intermediary arrays fit on the GPU.
 
 # Arguments
-- `m::PCNetwork`: The PCNetwork model to be trained.
-- `trainingData::Flux.DataLoader`: The training data as a Flux DataLoader.
-- `maxIters::Int = 50`: The maximum number of iterations for training.
-- `stoppingCondition::Float32 = 0.01f0`: The stopping condition for training.
-- `epochs::Int = 100`: The number of epochs for training.
-- `followUpRuns::Int = 10`: The number of follow-up runs after training.
-- `maxFollowUpIters::Int = 10`: The maximum number of iterations for follow-up runs.
+- `m::PCNetwork`: The PCNetwork model to be trained, on the GPU if desired.
+- `trainingData::NamedTuple`: The training data, with the keys corresponding to the layer names and the values corresponding to the data for that layer. The data should be on the GPU if and only if the PCNetwork is on the GPU.
+- `maxIters::Int = 50`: The maximum number of iterations for the forward pass.
+- `stoppingCondition::Float32 = 0.01f0`: Forward pass stopping condition, given as the norm of the update as a fraction of the norm of the state.
+- `followUpRuns::Int`: the number of training steps.
+- `maxFollowUpIters::Int = 10`: The maximum number of forward pass iterations between training steps. Fewer steps may be taken if the forward pass converges early.
 - `print_batch_error::Bool = true`: Whether to print the batch error during training.
 
 # Examples
 """
 
-function train_supervised!(m::PCNetwork, trainingData::Flux.DataLoader; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 10, maxFollowUpIters = 10, print_batch_error = true) 
+function train!(m::PCNetwork, trainingData::NamedTuple; maxIters = 50, stoppingCondition = 0.01f0, followUpRuns = 10, maxFollowUpIters = 10, print_batch_error = 100)
     
-    if first(trainingData.data) isa CuArray
-
-        println("To improve performance, leave the DataLoader on the CPU and make the batch size as large as possible without making your GPU kill itself. Batches will automatically be transferred to the GPU. Increase followUpRuns to take lots of training steps on the same batch to minimize transfers to the GPU.")
-        return
-
-    end
-    
-    onGPU = (get_states(m)[1:2] isa CuArray) 
-    k = 0
-    a = 0
-    for i in 1:epochs
-   
-        for (xb, yb) in trainingData
-            k += 1
-            if onGPU
-                xbc = cu(xb)
-                ybc = cu(yb)
-            end
-            
-            m(xbc, ybc; maxIters = maxIters, stoppingCondition = stoppingCondition, reinit = true)
-            initialize_backward!(m.psOpt, true)
-            backwardSolverStep!(m.psOpt, true)
-
-
-            for j in 1:followUpRuns
-
-                m(xbc, ybc; maxIters = maxFollowUpIters, stoppingCondition = stoppingCondition, reinit = false)
-                backwardSolverStep!(m.psOpt, false)
-
-            end
-
-            if print_batch_error
-                m(xbc; maxIters = maxIters, stoppingCondition = stoppingCondition, reinit = true)
-                a = classification_accuracy(get_states(m), ybc)
-                println("Batch $k error: $(m.psOpt.errorLogs[end]), du: $(m.psOpt.duLogs[end]), accuracy = $a")
-            end
-
-            if onGPU
-                CUDA.unsafe_free!(xbc)
-                CUDA.unsafe_free!(ybc)
-            end
-
-        end
+    k = 1
         
+    m(trainingData; maxIters = maxIters, stoppingCondition = stoppingCondition, reinit = true)
+    initialize_backward!(m.psOpt, true)
+    backwardSolverStep!(m.psOpt, true)
+    
+    for j in 1:followUpRuns
+        k += 1
+        m(trainingData; maxIters = maxFollowUpIters, stoppingCondition = stoppingCondition, reinit = false)
+        backwardSolverStep!(m.psOpt, true)
 
-        println("Epoch $i error: $(m.psOpt.errorLogs[end]), du: $(m.psOpt.duLogs[end])")
-
+        if k % print_batch_error == 0
+            println("Batch $k error: $(m.psOpt.errorLogs[end]), du: $(m.psOpt.duLogs[end])")
+        end
     end
 
 end

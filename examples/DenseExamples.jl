@@ -168,7 +168,7 @@ to_gpu!(pcn)
 batchSize = 1024 * 8
 trainingData = Flux.DataLoader((L0 = x,), batchsize = batchSize, partial = false, shuffle = true)
 
-@time train_unsupervised!(pcn, trainingData; maxIters = 75, stoppingCondition = 0.0025f0, epochs = 20, followUpRuns = 2000, maxFollowUpIters = 5, print_batch_error = false)
+@time train!(pcn, trainingData; maxIters = 75, stoppingCondition = 0.0025f0, epochs = 20, followUpRuns = 2000, maxFollowUpIters = 5, print_batch_error = false)
 change_step_size_backward!(pcn, (dt = 0.05f0,))
 # look at the convergence of the training algorithm
 scatterlines(get_training_du_logs(pcn))
@@ -246,10 +246,10 @@ to_gpu!(pcn)
 
 
 batchSize = 1024 *8
-trainingData = DataLoader((data = x, label = y), batchsize = batchSize, partial = false, shuffle = true)
+trainingData = DataLoader((L0 = x, L1 = y), batchsize = batchSize, partial = false, shuffle = true)
 
 
-@time train_supervised!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 1000, maxFollowUpIters = 5)
+@time train!(pcn, trainingData; maxIters = 50, stoppingCondition = 0.01f0, epochs = 100, followUpRuns = 1000, maxFollowUpIters = 5)
 change_step_size_backward!(pcn, (dt = 0.9f0,))
 # look at the convergence of the training algorithm
 scatterlines(get_training_du_logs(pcn)[5:end])
